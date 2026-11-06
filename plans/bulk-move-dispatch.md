@@ -67,19 +67,26 @@ Per group, inside one `withNativeAutomation` transaction:
    `appleevents.ByTest("mssg", ...)` over the source mailbox. Message IDs are
    numeric and validated the same way `n.message` validates them today;
    missing IDs simply never match the selector.
-3. One bulk existence `getd` asking for the `ID  ` property of every
-   reference, the same list-of-property-specifiers event the native read path
-   already uses (`getFields`, `pkg/mail/native_backend.go:179`; proven against
-   live Mail by the account timing probe's bulk column reads). IDs that come
-   back are confirmed; if Mail rejects the whole list read, fall back to
-   per-item existence checks for this group only, which preserves today's
-   clean "message not found" classification.
+3. One grouped existence `getd` asking for the `ID  ` property of every
+   message of the source whose ID equals one of the requested IDs — the
+   read-side twin of the move's selector, and the only grouped read shape
+   live Mail accepts: a list direct object is refused for reads exactly as
+   it is for moves (-1700), which degrades the whole phase to per-item
+   reads. IDs present in the reply are confirmed; non-matching IDs simply
+   never match the selector and classify missing. If Mail refuses the
+   grouped read or answers in an unusable shape, fall back to per-item
+   existence checks for this group only, which preserves today's clean
+   "message not found" classification; a transport-level failure is
+   returned without fallback.
 4. One `core/move` with `----` = the whose-clause selector over the confirmed
    IDs and `insh` = the destination, sent through `eventWithTimeout` with the
    group timeout.
 
-Expected event count for a 30-message homogeneous group: about 6-9 (account 1,
-two mailbox walks ~2-4, existence 1, move 1), versus roughly 300 today.
+The event count is flat in group size: account resolve plus two hardened
+mailbox walks (the walks scale with the account's mailbox tree — 27 events
+total in the test fixture, 91 on a live 177-mailbox account), then one
+grouped existence read plus one move. The per-item path costs roughly 25
+events per message on top of the same resolve.
 
 ### Group cap and splitting
 
@@ -152,9 +159,9 @@ including the unknown classification for a lost process.
 ## Release 1: native bulk move primitive
 
 - [x] Add `nativeMoveGroup` next to `nativeMove`: shared account/mailbox
-      resolution, whose-clause selector building, bulk existence read, single
-      `core/move`, alias-aware destination, scaled timeout, phase records
-      (`resolve_group`, `confirm_refs`, `bulk_move`).
+      resolution, whose-clause selector building, grouped existence read,
+      single `core/move`, alias-aware destination, scaled timeout, phase
+      records (`resolve_group`, `confirm_refs`, `bulk_move`).
 - [x] Add the group cap with consecutive splitting inside one transaction.
 - [x] Add rejection-versus-uncertain error classification.
 - [x] Unit tests with the fake descriptor transport
@@ -213,9 +220,11 @@ Follow the mutation-latency protocol from
 Mail state, disposable user-authorized messages, medians reported without
 message content.
 
-- A 30-message same-source/same-target `batch move` dispatches at most ~9
-  native events (receipt-observable via `BackendStatistics`), versus roughly
-  300 today.
+- A 30-message same-source/same-target `batch move` is O(1) in group size
+  (receipt-observable via `BackendStatistics`): one grouped confirm read and
+  one move beyond the account/mailbox resolve — a dispatch tail of at most 4
+  events, probe-calibrated because the resolve scales with the account's
+  mailbox tree — versus the per-item path's full resolve per message.
 - Wall time moves into the same ballpark as Mail's own drag move for the same
   messages; the copy into the destination remains the floor and is not
   expected to improve.

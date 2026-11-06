@@ -62,7 +62,12 @@ func TestNativeMoveGroupProbe(t *testing.T) {
 	for i, id := range ids {
 		items[i] = BatchItem{Account: account, SourceMailbox: source, ID: id, TargetMailbox: destination}
 	}
-	opts := BatchOptions{Action: "move", TargetMailbox: destination, VerifyBudget: 2 * time.Minute}
+	// Mail applies a group move asynchronously: the Apple Event returns once
+	// the move is accepted, and the IMAP copy lands in the destination over
+	// the following minutes. Verification therefore observes a long settle
+	// window instead of the default few-second backoff, bounded by the same
+	// five-minute ceiling --settle enforces.
+	opts := BatchOptions{Action: "move", TargetMailbox: destination, Settle: 3 * time.Minute, VerifyBudget: 5 * time.Minute}
 	if err := captureBatchIdentities(c, opts, items); err != nil {
 		t.Fatalf("capture stable identities: %v", err)
 	}
@@ -73,6 +78,27 @@ func TestNativeMoveGroupProbe(t *testing.T) {
 	}
 
 	before := BackendStatistics()
+	// Calibrate the account-dependent fixed cost of one dispatch: the same
+	// account resolve and two hardened mailbox walks nativeMoveGroup's
+	// resolve_group phase performs, measured read-only against this live
+	// account. The walk scales with the account's mailbox tree, so a flat
+	// event bound cannot hold across accounts.
+	if err := c.withNativeAutomation(defaultAutomationTimeout, func(n *nativeMail) error {
+		acc, err := n.account(account)
+		if err != nil {
+			return err
+		}
+		if _, err := n.mailbox(acc, source); err != nil {
+			return err
+		}
+		_, err = n.mailbox(acc, destination)
+		return err
+	}); err != nil {
+		t.Fatalf("resolve calibration: %v", err)
+	}
+	resolveEvents := BackendStatistics().NativeEvents - before.NativeEvents
+
+	before = BackendStatistics()
 	started := time.Now()
 	moved, missing, err := c.nativeMoveGroup(account, source, destination, ids)
 	elapsed := time.Since(started)
@@ -87,13 +113,15 @@ func TestNativeMoveGroupProbe(t *testing.T) {
 	if len(missing) != 0 {
 		t.Fatalf("probe classified %d ids as missing before dispatch", len(missing))
 	}
-	// Acceptance bound: one group dispatch is O(1) in group size — account
-	// resolve, two hardened mailbox lookups (~12 events each on a flat
-	// account, more with nested mailboxes), the bulk confirm, and the
-	// move(s). The per-item path costs ~27 events per message, so 30
-	// messages would be ~810; anything near that means grouping broke.
-	if events > 45 {
-		t.Fatalf("group dispatch sent %d native events, want at most 45", events)
+	// Acceptance bound: one group dispatch is O(1) in group size. The
+	// account/mailbox resolve dominates on a large account, so the probe
+	// bounds only the dispatch tail beyond the calibrated resolve: one
+	// grouped confirm read plus one move per maxMoveGroupRefs chunk — at
+	// most 4 events for a bounded 30-id group. The per-item path re-pays
+	// the whole resolve for every message; a tail that grows with the
+	// group means grouping broke.
+	if tail := events - resolveEvents; tail > 4 {
+		t.Fatalf("group dispatch sent %d native events beyond the %d-event resolve, want at most 4", tail, resolveEvents)
 	}
 
 	for i := range items {
@@ -109,6 +137,6 @@ func TestNativeMoveGroupProbe(t *testing.T) {
 	if unverified != 0 {
 		t.Fatalf("identity verification failed for %d of %d moved messages", unverified, len(ids))
 	}
-	t.Logf("probe=move-group count=%d nativeEvents=%d nativeEventMS=%.1f elapsedMS=%.1f",
-		len(ids), events, stats.NativeEventMS-before.NativeEventMS, float64(elapsed.Microseconds())/1000)
+	t.Logf("probe=move-group count=%d nativeEvents=%d resolveEvents=%d nativeEventMS=%.1f elapsedMS=%.1f",
+		len(ids), events, resolveEvents, stats.NativeEventMS-before.NativeEventMS, float64(elapsed.Microseconds())/1000)
 }

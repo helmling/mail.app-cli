@@ -22,13 +22,24 @@ func moveGroupFixture(t *testing.T, ids ...int64) (*nativeReadFixture, *Client) 
 }
 
 // moveGroupFixtureData builds the group fixture without touching the
-// environment, so background goroutines can construct their own.
+// environment, so background goroutines can construct their own. The
+// requested ids become the source mailbox's entire message list: the grouped
+// existence read iterates that list, so every confirmable message must be a
+// member of it.
 func moveGroupFixtureData(ids ...int64) *nativeReadFixture {
 	f := newNativeReadFixture()
+	inbox := make([]appleevents.Value, 0, len(ids))
 	for _, id := range ids {
 		key := fmt.Sprintf("mssg:%d", id)
 		f.properties[key] = map[string]appleevents.Value{"ID  ": appleevents.Int(id)}
+		inbox = append(inbox, fixtureRef("mssg", strconv.FormatInt(id, 10)))
 	}
+	// Group tests move in both directions between the fixture's two
+	// mailboxes, and the grouped existence read confirms membership per
+	// source mailbox, so members register in both; whose selectors are
+	// ID-scoped, so cross-membership can never match a foreign group.
+	f.messages["mbxp:inbox"] = inbox
+	f.messages["mbxp:archive"] = inbox
 	return f
 }
 
@@ -42,16 +53,32 @@ func eventsWithID(f *nativeReadFixture, id string) []appleevents.Event {
 	return out
 }
 
-// confirmReads are the bulk existence reads: getd events whose direct object
-// is a list of property specifiers.
+// confirmReads are the grouped existence reads: one getd whose direct object
+// is the ID property of a whose-clause message selector over the source.
 func confirmReads(f *nativeReadFixture) []appleevents.Event {
 	var out []appleevents.Event
 	for _, event := range eventsWithID(f, "getd") {
-		if event.Params["----"].Kind == "list" {
+		if isGroupConfirmRead(event) {
 			out = append(out, event)
 		}
 	}
 	return out
+}
+
+// isGroupConfirmRead reports whether a getd event is the grouped existence
+// read: the ID property of a whose-clause message selector. Only that shape
+// qualifies — the mailbox walk also reads properties but over plain
+// containers, and account resolution reads a test-form selector of accounts.
+func isGroupConfirmRead(event appleevents.Event) bool {
+	if event.Class != "core" || event.ID != "getd" {
+		return false
+	}
+	direct := event.Params["----"]
+	if direct.Kind != "object" || direct.Fields["want"].Code != "prop" || direct.Fields["seld"].Code != "ID  " {
+		return false
+	}
+	container := direct.Fields["from"]
+	return container.Kind == "object" && container.Fields["want"].Code == "mssg" && container.Fields["form"].Code == "test"
 }
 
 // isGroupMove reports whether a core/move event carries the group dispatch
@@ -78,24 +105,46 @@ func assertGroupMoveSelector(t *testing.T, f *nativeReadFixture, event appleeven
 	if got := f.key(direct.Fields["from"]); got != sourceKey {
 		t.Fatalf("group move selector is scoped to %s, want %s", got, sourceKey)
 	}
-	test := direct.Fields["seld"]
+	assertIDEqualityTerms(t, "group move", direct.Fields["seld"], wantIDs...)
+}
+
+// assertGroupConfirmSelector checks a grouped existence read: the ID property
+// of one whose-clause selector over the source whose ID-equality terms cover
+// exactly the requested ids, in request order.
+func assertGroupConfirmSelector(t *testing.T, f *nativeReadFixture, event appleevents.Event, sourceKey string, wantIDs ...int64) {
+	t.Helper()
+	direct := event.Params["----"]
+	if !isGroupConfirmRead(event) {
+		t.Fatalf("confirm read direct object = %+v, want the ID property of a whose-clause selector", direct)
+	}
+	if got := f.key(direct.Fields["from"].Fields["from"]); got != sourceKey {
+		t.Fatalf("confirm read selector is scoped to %s, want %s", got, sourceKey)
+	}
+	assertIDEqualityTerms(t, "confirm read", direct.Fields["from"].Fields["seld"], wantIDs...)
+}
+
+// assertIDEqualityTerms checks a whose-clause test descriptor: an OR whose
+// terms compare the examined message's ID against exactly the wanted ids, in
+// order.
+func assertIDEqualityTerms(t *testing.T, label string, test appleevents.Value, wantIDs ...int64) {
+	t.Helper()
 	if test.Kind != "logical" || test.Fields["logc"].Code != "OR  " {
-		t.Fatalf("group move test = %+v, want an OR over ID comparisons", test)
+		t.Fatalf("%s test = %+v, want an OR over ID comparisons", label, test)
 	}
 	terms := test.Fields["term"].Items
 	if len(terms) != len(wantIDs) {
-		t.Fatalf("group move selector carries %d ID terms, want %d", len(terms), len(wantIDs))
+		t.Fatalf("%s selector carries %d ID terms, want %d", label, len(terms), len(wantIDs))
 	}
 	for i, want := range wantIDs {
 		term := terms[i]
 		if term.Kind != "comparison" || term.Fields["relo"].Code != "=   " {
-			t.Fatalf("group move term %d = %+v, want an ID equality", i, term)
+			t.Fatalf("%s term %d = %+v, want an ID equality", label, i, term)
 		}
 		if prop := term.Fields["obj1"]; prop.Kind != "object" || prop.Fields["seld"].Code != "ID  " || prop.Fields["from"].Kind != "examined" {
-			t.Fatalf("group move term %d tests %v, want the ID of the examined message", i, prop.Fields["seld"])
+			t.Fatalf("%s term %d tests %v, want the ID of the examined message", label, i, prop.Fields["seld"])
 		}
 		if operand := term.Fields["obj2"]; operand.Kind != "int" || operand.Number != want {
-			t.Fatalf("group move term %d compares ID against %d, want %d", i, operand.Number, want)
+			t.Fatalf("%s term %d compares ID against %d, want %d", label, i, operand.Number, want)
 		}
 	}
 }
@@ -121,14 +170,15 @@ func TestNativeMoveGroupSingleDispatch(t *testing.T) {
 		t.Fatalf("move destination = %s, want mbxp:archive", key)
 	}
 	reads := confirmReads(f)
-	if len(reads) != 1 || len(reads[0].Params["----"].Items) != 3 {
-		t.Fatalf("expected one bulk existence read over 3 refs, got %d reads", len(reads))
+	if len(reads) != 1 {
+		t.Fatalf("expected one grouped existence read, got %d", len(reads))
 	}
+	assertGroupConfirmSelector(t, f, reads[0], "mbxp:inbox", 42, 43, 44)
 	// Account resolve (1) + source mailboxExact (12: walk 2, account ID 1,
 	// two canonicalMailbox passes over the candidate and the resolved ref,
-	// 8) + destination mailboxExact (12) + bulk confirm (1) + move (1):
-	// twenty-seven events for three messages, and the same count for thirty.
-	// The per-item path costs 27 per message.
+	// 8) + destination mailboxExact (12) + grouped confirm read (1) + move
+	// (1): twenty-seven events for three messages, and the same count for
+	// thirty. The per-item path costs 27 per message.
 	if got := len(f.events); got != 27 {
 		t.Fatalf("group dispatch sent %d events, want 27", got)
 	}
@@ -151,15 +201,18 @@ func TestNativeMoveGroupMissingIDClassified(t *testing.T) {
 		t.Fatalf("expected one move over the 2 confirmed refs, got %d moves", len(moves))
 	}
 	assertGroupMoveSelector(t, f, moves[0], "mbxp:inbox", 42, 43)
-	// The wholesale bulk read fails on the missing member; the per-item
-	// fallback then re-confirms each ref individually.
-	if len(confirmReads(f)) != 1 {
-		t.Fatalf("expected the failed bulk read to be attempted once")
+	// The grouped read returns the IDs that exist; 99 simply never matches,
+	// so it classifies missing without any per-item fallback.
+	reads := confirmReads(f)
+	if len(reads) != 1 {
+		t.Fatalf("expected one grouped existence read, got %d", len(reads))
 	}
+	assertGroupConfirmSelector(t, f, reads[0], "mbxp:inbox", 42, 99, 43)
 	// Flat group cost (25: account resolve, two mailboxExact lookups) plus
-	// the failed bulk read (1), the per-item confirms (3), and the move (1).
-	if got := len(f.events); got != 30 {
-		t.Fatalf("group dispatch sent %d events, want 30", got)
+	// the grouped confirm read (1) and the move (1): the same twenty-seven
+	// events whether every requested message exists or not.
+	if got := len(f.events); got != 27 {
+		t.Fatalf("group dispatch sent %d events, want 27", got)
 	}
 }
 
@@ -302,7 +355,7 @@ func TestNativeMoveGroupConfirmTransportFailureDoesNotFallback(t *testing.T) {
 	errBridgeLost := errors.New("bridge connection lost")
 	f, c := moveGroupFixture(t, 42, 43)
 	f.fail = func(event appleevents.Event) error {
-		if event.ID == "getd" && event.Params["----"].Kind == "list" {
+		if isGroupConfirmRead(event) {
 			return errBridgeLost
 		}
 		return nil
@@ -325,10 +378,10 @@ func TestNativeMoveGroupConfirmTransportFailureDoesNotFallback(t *testing.T) {
 		t.Fatal("dispatched a move after a failed confirm read")
 	}
 	if len(confirmReads(f)) != 1 {
-		t.Fatal("expected exactly the one failed bulk read, with no per-item fallback")
+		t.Fatal("expected exactly the one failed grouped read, with no per-item fallback")
 	}
-	// Account resolve (1) + two mailboxExact lookups (24) + the failed bulk
-	// read (1); no per-item confirms, no move.
+	// Account resolve (1) + two mailboxExact lookups (24) + the failed
+	// grouped read (1); no per-item confirms, no move.
 	if got := len(f.events); got != 26 {
 		t.Fatalf("group dispatch sent %d events, want 26", got)
 	}
@@ -401,6 +454,14 @@ func TestNativeMoveGroupSplitsOversizedGroups(t *testing.T) {
 	}
 	assertGroupMoveSelector(t, f, moves[0], "mbxp:inbox", fixtureIDs[:maxMoveGroupRefs]...)
 	assertGroupMoveSelector(t, f, moves[1], "mbxp:inbox", fixtureIDs[maxMoveGroupRefs:]...)
+	// The existence read chunks with the moves: one whose-clause read per
+	// maxMoveGroupRefs slice of the requested ids.
+	reads := confirmReads(f)
+	if len(reads) != 2 {
+		t.Fatalf("expected the existence read to split into 2 chunks, got %d", len(reads))
+	}
+	assertGroupConfirmSelector(t, f, reads[0], "mbxp:inbox", fixtureIDs[:maxMoveGroupRefs]...)
+	assertGroupConfirmSelector(t, f, reads[1], "mbxp:inbox", fixtureIDs[maxMoveGroupRefs:]...)
 }
 
 func TestMoveGroupTimeoutScaling(t *testing.T) {

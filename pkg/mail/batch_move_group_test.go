@@ -82,11 +82,12 @@ func TestRunBatchMoveGroupCollapsesHomogeneousChunk(t *testing.T) {
 	}
 	assertGroupMoveSelector(t, f, moves[0], "mbxp:inbox", 42, 43, 44)
 	reads := confirmReads(f)
-	if len(reads) != 1 || len(reads[0].Params["----"].Items) != 3 {
+	if len(reads) != 1 {
 		t.Fatalf("confirm reads = %d, want one over 3 references", len(reads))
 	}
-	// Account resolve plus two mailbox lookups, one bulk existence read, one
-	// move: the same twenty-seven events the primitive dispatches, and a
+	assertGroupConfirmSelector(t, f, reads[0], "mbxp:inbox", 42, 43, 44)
+	// Account resolve plus two mailbox lookups, one grouped existence read,
+	// one move: the same twenty-seven events the primitive dispatches, and a
 	// fraction of the per-item path's twenty-seven per message.
 	if got := len(f.events); got != 27 {
 		t.Fatalf("group dispatch sent %d events, want 27", got)
@@ -136,9 +137,11 @@ func TestRunBatchMoveThirtyMessagesShareOneTransaction(t *testing.T) {
 		t.Fatalf("group moves = %d, want one over 30 references", len(moves))
 	}
 	assertGroupMoveSelector(t, f, moves[0], "mbxp:inbox", ids...)
-	if reads := confirmReads(f); len(reads) != 1 || len(reads[0].Params["----"].Items) != 30 {
+	reads := confirmReads(f)
+	if len(reads) != 1 {
 		t.Fatalf("confirm reads = %d, want one over 30 references", len(reads))
 	}
+	assertGroupConfirmSelector(t, f, reads[0], "mbxp:inbox", ids...)
 	// Twenty-seven events for thirty messages: the same cost as one
 	// per-item move. The per-item path would send roughly eight hundred.
 	if got := len(f.events); got != 27 {

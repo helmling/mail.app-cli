@@ -47,12 +47,11 @@ func moveGroupTimeout(count int) time.Duration {
 	return timeout
 }
 
-// groupMessageRef pairs a batch item's message ID with the reference Mail
-// confirmed inside the source mailbox.
+// groupMessageRef pairs a batch item's message ID with the numeric form the
+// whose-clause selectors compare.
 type groupMessageRef struct {
 	id  string
 	num int64
-	ref appleevents.Value
 }
 
 // nativeMoveGroup moves every id from one source mailbox to one destination
@@ -122,12 +121,11 @@ func (c *Client) nativeMoveGroup(account, mailbox, destination string, ids []str
 	return moved, missing, err
 }
 
-// moveGroupSelector builds the direct object of one group move. Mail's move
-// command accepts a single specifier, not a list of references — a list
-// direct object is refused with a coercion error — so the group travels as
-// one whose-clause selector: every message of the source mailbox whose ID
-// equals one of the confirmed references, joined by OR over at most
-// maxMoveGroupRefs terms per event.
+// moveGroupSelector builds the whose-clause selector covering the given
+// references: every message of the source mailbox whose ID equals one of
+// them, joined by OR over at most maxMoveGroupRefs terms. Mail refuses a
+// list direct object for both reads and moves — a coercion error — so the
+// grouped existence read and the group move both dispatch this selector.
 func moveGroupSelector(source appleevents.Value, refs []groupMessageRef) appleevents.Value {
 	tests := make([]appleevents.Value, len(refs))
 	for i, ref := range refs {
@@ -136,13 +134,21 @@ func moveGroupSelector(source appleevents.Value, refs []groupMessageRef) appleev
 	return appleevents.ByTest("mssg", appleevents.Logical("OR  ", tests...), source)
 }
 
+// errGroupReadShape reports Mail answering the grouped existence read with a
+// value whose shape cannot be classified; the per-item fallback re-asks one
+// reference at a time.
+var errGroupReadShape = errors.New("Mail answered the grouped existence read in an unusable shape")
+
 // confirmGroupRefs proves each message exists in the source mailbox before
-// any mutation is issued. One bulk read asks for every reference's ID
-// property, the same list-of-property-specifiers shape getFields uses. Mail
-// refusing that read, or one reference missing from it, falls back to
-// per-item existence checks so the clean not-found classification survives.
-// A transport-level failure is returned without fallback: hammering a broken
-// bridge with per-item reads proves nothing.
+// any mutation is issued. One grouped read asks for the ID property of every
+// message of the source whose ID equals one of the requested ids — the
+// read-side twin of the group move's selector, and the only grouped read
+// shape live Mail accepts: a list direct object is refused for reads exactly
+// as it is for moves, which degrades the whole phase to per-item reads. Mail
+// refusing the grouped read, or answering in an unusable shape, falls back
+// to per-item existence checks so the clean not-found classification
+// survives. A transport-level failure is returned without fallback:
+// hammering a broken bridge with per-item reads proves nothing.
 func (n *nativeMail) confirmGroupRefs(source appleevents.Value, ids []string) (refs []groupMessageRef, missing []string, err error) {
 	err = n.phase("confirm_refs", func() error {
 		refs = make([]groupMessageRef, 0, len(ids))
@@ -155,49 +161,76 @@ func (n *nativeMail) confirmGroupRefs(source appleevents.Value, ids []string) (r
 				missing = append(missing, id)
 				continue
 			}
-			refs = append(refs, groupMessageRef{id: id, num: number, ref: appleevents.ByID("mssg", appleevents.Int(number), source)})
+			refs = append(refs, groupMessageRef{id: id, num: number})
 		}
 		if len(refs) == 0 {
 			return nil
 		}
-		specifiers := make([]appleevents.Value, len(refs))
-		for i, ref := range refs {
-			specifiers[i] = appleevents.Property("ID  ", ref.ref)
-		}
-		values, gerr := n.get(appleevents.List(specifiers...))
-		if gerr == nil && values.Kind == "list" && len(values.Items) == len(refs) {
+		present, gerr := n.readGroupIDs(source, refs)
+		if gerr == nil {
 			confirmed := refs[:0]
-			for i, value := range values.Items {
-				if value.Kind == "int" && value.Number == refs[i].num {
-					confirmed = append(confirmed, refs[i])
+			for _, ref := range refs {
+				if present[ref.num] {
+					confirmed = append(confirmed, ref)
 					continue
 				}
-				missing = append(missing, refs[i].id)
+				missing = append(missing, ref.id)
 			}
 			refs = confirmed
 			return nil
 		}
 		var reply *appleevents.Error
-		if gerr != nil && !errors.As(gerr, &reply) {
+		if !errors.As(gerr, &reply) && !errors.Is(gerr, errGroupReadShape) {
 			// The bridge failed before Mail answered; no fallback.
 			return gerr
 		}
-		// Mail refused the bulk read or returned an unusable shape: confirm
-		// each reference individually, preserving not-found classification.
+		// Mail refused the grouped read or answered in an unusable shape:
+		// confirm each reference individually, preserving not-found
+		// classification.
 		confirmed := make([]groupMessageRef, 0, len(refs))
 		for _, ref := range refs {
-			confirmedRef, merr := n.message(source, ref.id)
-			if merr != nil {
+			if _, merr := n.message(source, ref.id); merr != nil {
 				if errors.Is(merr, ErrNotFound) {
 					missing = append(missing, ref.id)
 					continue
 				}
 				return merr
 			}
-			confirmed = append(confirmed, groupMessageRef{id: ref.id, num: ref.num, ref: confirmedRef})
+			confirmed = append(confirmed, ref)
 		}
 		refs = confirmed
 		return nil
 	})
 	return refs, missing, err
+}
+
+// readGroupIDs asks for the ID property of every message of the source whose
+// ID equals one of the requested numbers: one whose-clause read per
+// maxMoveGroupRefs chunk, dispatching the same selector the group move later
+// sends. The reply carries the IDs of the messages that exist, in Mail's own
+// order.
+func (n *nativeMail) readGroupIDs(source appleevents.Value, refs []groupMessageRef) (map[int64]bool, error) {
+	present := make(map[int64]bool, len(refs))
+	for start := 0; start < len(refs); start += maxMoveGroupRefs {
+		batch := refs[start:min(start+maxMoveGroupRefs, len(refs))]
+		values, err := n.get(appleevents.Property("ID  ", moveGroupSelector(source, batch)))
+		if err != nil {
+			return nil, err
+		}
+		switch values.Kind {
+		case "int":
+			// A single match may come back uncoerced from its list.
+			present[values.Number] = true
+		case "list":
+			for _, item := range values.Items {
+				if item.Kind != "int" {
+					return nil, errGroupReadShape
+				}
+				present[item.Number] = true
+			}
+		default:
+			return nil, errGroupReadShape
+		}
+	}
+	return present, nil
 }
