@@ -64,6 +64,7 @@ func TestSessionTimeoutKillsChildAndAllowsFreshSession(t *testing.T) {
 
 func TestBatchBridgeKeepsDurablePhasesAndStopsOnUnknown(t *testing.T) {
 	t.Setenv("MAIL_APP_CLI_AUTOMATION_LOCK_PATH", filepath.Join(t.TempDir(), "lock"))
+	// Three mark-read exchanges, then the group script loses the bridge.
 	writeFakeOsaScript(t, `n=0
 while IFS= read -r line; do
  n=$((n+1))
@@ -78,11 +79,17 @@ done
 	defer journal.Close()
 	items := []BatchItem{{ID: "1", Account: "Work", SourceMailbox: "INBOX"}, {ID: "2", Account: "Work", SourceMailbox: "INBOX"}, {ID: "3", Account: "Work", SourceMailbox: "INBOX"}}
 	result, err := RunBatch(NewClient(), BatchOptions{Action: "move", TargetMailbox: "Processed", MarkReadBefore: true, ReuseBridge: true, Receipt: journal}, items, MoveMutator(false))
-	if !errors.Is(err, errSessionInterrupted) || result.Succeeded != 1 || len(result.Items) != 2 || result.Items[1].Status != "unknown" {
+	var uncertain *moveGroupUncertainError
+	if !errors.As(err, &uncertain) || !errors.Is(err, errSessionInterrupted) || result.Succeeded != 0 || len(result.Items) != 3 {
 		t.Fatalf("result = %+v, %v", result, err)
 	}
+	for _, item := range result.Items {
+		if item.Status != "unknown" {
+			t.Fatalf("item %s status = %s, want unknown", item.ID, item.Status)
+		}
+	}
 	events := readJournalEvents(t, journal.Path())
-	if countJournalEvents(events, "mark_read_succeeded") != 2 || countJournalEvents(events, "mutation_started") != 2 || countJournalEvents(events, "mutation_succeeded") != 1 || events[len(events)-1]["event"] != "interrupted" {
+	if countJournalEvents(events, "mark_read_succeeded") != 3 || countJournalEvents(events, "mutation_started") != 3 || countJournalEvents(events, "bulk_move") != 1 || countJournalEvents(events, "mutation_unknown") != 3 || events[len(events)-1]["event"] != "interrupted" {
 		t.Fatalf("events = %+v", events)
 	}
 }

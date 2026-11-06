@@ -121,13 +121,15 @@ working through the list.
 
 ### Mutator plumbing without breaking the API
 
-`MoveMutator` currently returns a `Mutator` closure. It will return a named
-unexported type implementing `Mutator` plus an unexported `moveGroup(*Client,
-[]BatchItem) error` method. Callers that only pass it to `RunBatch` are
-unaffected; `batchRunner.dispatch` type-asserts the group capability when the
-action is `move`, the backend is native, and a run of at least two items
-shares the group key. Single items, mixed keys, and the fallback path use the
-per-item `Mutator` unchanged.
+`MoveMutator` previously returned a `Mutator` closure. It returns the named
+top-level funcs `moveMutatorNoJournal`/`moveMutatorJournal`, recognized by
+function-code pointer (`moveMutatorCodes`/`isMoveMutator`): an inlined
+closure literal gets a fresh code symbol per call site, so closure
+recognition depended on where the caller was compiled. Callers that only
+pass it to `RunBatch` are unaffected; `batchRunner.dispatch` recognizes the
+built-in mutator when the action is `move`, on either backend, and
+consecutive items share the group key. Single items, mixed keys, and the
+fallback path use the per-item `Mutator` unchanged.
 
 ### Legacy backend
 
@@ -140,18 +142,18 @@ process.
 
 ## Release 1: native bulk move primitive
 
-- [ ] Add `nativeMoveGroup` next to `nativeMove`: shared account/mailbox
+- [x] Add `nativeMoveGroup` next to `nativeMove`: shared account/mailbox
       resolution, list building, bulk existence read, single `core/move`,
       alias-aware destination, scaled timeout, phase records
       (`resolve_group`, `confirm_refs`, `bulk_move`).
-- [ ] Add the group cap with consecutive splitting inside one transaction.
-- [ ] Add rejection-versus-uncertain error classification.
-- [ ] Unit tests with the fake descriptor transport
+- [x] Add the group cap with consecutive splitting inside one transaction.
+- [x] Add rejection-versus-uncertain error classification.
+- [x] Unit tests with the fake descriptor transport
       (`c.shared.nativeSender`, the pattern used throughout
       `pkg/mail/native_*_test.go`): all refs confirmed, one missing,
       list rejected, timeout mid-list, oversized group splitting, progress and
       phase traces.
-- [ ] Live probe test, env-gated like the existing probes
+- [x] Live probe test, env-gated like the existing probes
       (`internal/appleevents/permission_timing_probe_test.go` style): moves a
       bounded set of user-authorized disposable messages supplied through
       explicit fixture paths, asserts the group's `BackendStatistics()`
@@ -161,27 +163,27 @@ process.
 
 ## Release 2: batch runner integration
 
-- [ ] Convert `MoveMutator` to the named type with `moveGroup`; keep the
+- [x] Convert `MoveMutator` to the named type with `moveGroup`; keep the
       per-item `Mutator` implementation as the fallback.
-- [ ] Group consecutive same-key items per chunk in `dispatch()`
+- [x] Group consecutive same-key items per chunk in `dispatch()`
       (`pkg/mail/batch_workflow.go:118`), running the existing per-item skip,
       journal, and `MarkReadBefore` bookkeeping before the group transaction.
-- [ ] Wire per-item outcome records, the `bulk_move` journal record, group
+- [x] Wire per-item outcome records, the `bulk_move` journal record, group
       progress lines, and the unknown classification through `finish()`.
-- [ ] Fallback triggers: singleton groups, mixed keys, Mail rejecting the
+- [x] Fallback triggers: singleton groups, mixed keys, Mail rejecting the
       list form (once per process), and any probe-discovered incompatibility.
-- [ ] Tests: receipts and journal contents for a group run, unknown items
+- [x] Tests: receipts and journal contents for a group run, unknown items
       after a simulated timeout, verification classifying a partially applied
       group by identity, `--progress` output, chunk-boundary grouping, and the
       non-cgo compatibility suite.
-- [ ] Race tests over concurrent batch runners; `.surface` snapshot verified
+- [x] Race tests over concurrent batch runners; `.surface` snapshot verified
       unchanged (regenerate only if a flag ever appears).
 
 ## Release 3: legacy group script
 
-- [ ] One JXA script per group with per-ID resolution, list move, and per-ID
+- [x] One JXA script per group with per-ID resolution, list move, and per-ID
       status, reusing the existing bridge session when `ReuseBridge` is set.
-- [ ] Unit tests using the fake `osascript` fixtures (the
+- [x] Unit tests using the fake `osascript` fixtures (the
       `pkg/mail/health_test.go` pattern), covering missing IDs, process
       timeout (unknown, no replay), and status parsing.
 

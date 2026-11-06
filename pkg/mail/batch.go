@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -165,20 +166,61 @@ func DeleteMutator(client *Client, item *BatchItem) error {
 	return client.DeleteMessageResolved(item.Account, item.SourceMailbox, item.ID)
 }
 
-// MoveMutator moves a message to item.TargetMailbox.
+// moveMutatorNoJournal and moveMutatorJournal are the function values
+// MoveMutator hands out. They are named top-level functions on purpose:
+// a capturing closure literal gets a fresh code symbol at every call site
+// the compiler inlines, so pointer recognition would depend on where the
+// caller was compiled. Named functions keep one stable pointer each.
+func moveMutatorNoJournal(client *Client, item *BatchItem) error {
+	return moveItem(client, item, false)
+}
+
+func moveMutatorJournal(client *Client, item *BatchItem) error {
+	return moveItem(client, item, true)
+}
+
+// MoveMutator moves a message to item.TargetMailbox. Every call returns one
+// of two named function values, so the batch runner can recognize the
+// built-in mutator by code pointer and collapse a homogeneous group into
+// one bulk move; a custom mutator never matches and is never bypassed.
 func MoveMutator(journal bool) Mutator {
-	return func(client *Client, item *BatchItem) error {
-		if journal {
-			_ = client.RecordRecentEnvelope(item.Account, item.SourceMailbox, item.ID, "move")
-		}
-		if err := client.MoveMessage(item.Account, item.SourceMailbox, item.ID, item.TargetMailbox); err != nil {
-			return err
-		}
-		if journal {
-			_ = UpdateRecentMessageLocation(item.Account, item.ID, item.TargetMailbox, "move")
-		}
-		return nil
+	if journal {
+		return moveMutatorJournal
 	}
+	return moveMutatorNoJournal
+}
+
+// moveMutatorCodes are the code pointers MoveMutator can hand out, one per
+// journal flag.
+var moveMutatorCodes = [2]uintptr{
+	reflect.ValueOf(moveMutatorNoJournal).Pointer(),
+	reflect.ValueOf(moveMutatorJournal).Pointer(),
+}
+
+// isMoveMutator reports whether mutate is a MoveMutator function. Any other
+// function — including a hand-written copy of its body — stays on the
+// per-item path and is never bypassed.
+func isMoveMutator(mutate Mutator) bool {
+	if mutate == nil {
+		return false
+	}
+	code := reflect.ValueOf(mutate).Pointer()
+	return code == moveMutatorCodes[0] || code == moveMutatorCodes[1]
+}
+
+// moveItem is the per-item move the built-in mutator performs and the group
+// fallback replays after Mail refuses the list form.
+func moveItem(client *Client, item *BatchItem, journal bool) error {
+	if journal {
+		_ = client.RecordRecentEnvelope(item.Account, item.SourceMailbox, item.ID, "move")
+	}
+	if err := client.MoveMessage(item.Account, item.SourceMailbox, item.ID, item.TargetMailbox); err != nil {
+		return err
+	}
+	if journal {
+		_ = UpdateRecentMessageLocation(item.Account, item.ID, item.TargetMailbox, "move")
+	}
+	return nil
 }
 
 // MarkMutator sets read status.
@@ -258,6 +300,10 @@ func isUnknownMutationError(client *Client, err error) bool {
 	}
 	var nativeArchiveErr *NativeArchiveError
 	if errors.As(err, &nativeArchiveErr) {
+		return true
+	}
+	var groupUncertain *moveGroupUncertainError
+	if errors.As(err, &groupUncertain) {
 		return true
 	}
 	if client.Done() != nil {

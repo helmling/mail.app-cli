@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	"github.com/0xSMW/mail.app-cli/v3/internal/appleevents"
 	"github.com/0xSMW/mail.app-cli/v3/internal/mailax"
@@ -26,6 +27,10 @@ type clientState struct {
 	backend                  string
 	nativeSender             appleevents.Sender
 	nativeAX                 mailax.Driver
+	// moveGroupRejected latches the first refusal of the list form of move:
+	// later groups in this process dispatch per item, exactly as before the
+	// group path existed.
+	moveGroupRejected atomic.Bool
 }
 
 // Client reads the local index and MIME and sends changes through the selected
