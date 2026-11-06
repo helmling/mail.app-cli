@@ -209,7 +209,7 @@ func isMoveMutator(mutate Mutator) bool {
 }
 
 // moveItem is the per-item move the built-in mutator performs and the group
-// fallback replays after Mail refuses the list form.
+// fallback replays after Mail refuses the grouped form.
 func moveItem(client *Client, item *BatchItem, journal bool) error {
 	if journal {
 		_ = client.RecordRecentEnvelope(item.Account, item.SourceMailbox, item.ID, "move")

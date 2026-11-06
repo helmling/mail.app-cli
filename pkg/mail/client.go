@@ -27,9 +27,9 @@ type clientState struct {
 	backend                  string
 	nativeSender             appleevents.Sender
 	nativeAX                 mailax.Driver
-	// moveGroupRejected latches the first refusal of the list form of move:
-	// later groups in this process dispatch per item, exactly as before the
-	// group path existed.
+	// moveGroupRejected latches the first refusal of the grouped form of
+	// move: later groups in this process dispatch per item, exactly as
+	// before the group path existed.
 	moveGroupRejected atomic.Bool
 }
 

@@ -54,6 +54,52 @@ func confirmReads(f *nativeReadFixture) []appleevents.Event {
 	return out
 }
 
+// isGroupMove reports whether a core/move event carries the group dispatch
+// form: a whose-clause selector instead of one per-item reference. Only the
+// move event itself qualifies — account resolution and searches also send
+// test-form selectors, but on reads.
+func isGroupMove(event appleevents.Event) bool {
+	if event.Class != "core" || event.ID != "move" {
+		return false
+	}
+	direct := event.Params["----"]
+	return direct.Kind == "object" && direct.Fields["form"].Code == "test"
+}
+
+// assertGroupMoveSelector checks a group move's direct object: one
+// whose-clause selector over the source mailbox whose ID-equality terms
+// cover exactly the confirmed ids, in dispatch order.
+func assertGroupMoveSelector(t *testing.T, f *nativeReadFixture, event appleevents.Event, sourceKey string, wantIDs ...int64) {
+	t.Helper()
+	direct := event.Params["----"]
+	if !isGroupMove(event) || direct.Fields["want"].Code != "mssg" {
+		t.Fatalf("group move direct object = %+v, want a whose-clause message selector", direct)
+	}
+	if got := f.key(direct.Fields["from"]); got != sourceKey {
+		t.Fatalf("group move selector is scoped to %s, want %s", got, sourceKey)
+	}
+	test := direct.Fields["seld"]
+	if test.Kind != "logical" || test.Fields["logc"].Code != "OR  " {
+		t.Fatalf("group move test = %+v, want an OR over ID comparisons", test)
+	}
+	terms := test.Fields["term"].Items
+	if len(terms) != len(wantIDs) {
+		t.Fatalf("group move selector carries %d ID terms, want %d", len(terms), len(wantIDs))
+	}
+	for i, want := range wantIDs {
+		term := terms[i]
+		if term.Kind != "comparison" || term.Fields["relo"].Code != "=   " {
+			t.Fatalf("group move term %d = %+v, want an ID equality", i, term)
+		}
+		if prop := term.Fields["obj1"]; prop.Kind != "object" || prop.Fields["seld"].Code != "ID  " || prop.Fields["from"].Kind != "examined" {
+			t.Fatalf("group move term %d tests %v, want the ID of the examined message", i, prop.Fields["seld"])
+		}
+		if operand := term.Fields["obj2"]; operand.Kind != "int" || operand.Number != want {
+			t.Fatalf("group move term %d compares ID against %d, want %d", i, operand.Number, want)
+		}
+	}
+}
+
 func TestNativeMoveGroupSingleDispatch(t *testing.T) {
 	f, c := moveGroupFixture(t, 42, 43, 44)
 	moved, missing, err := c.nativeMoveGroup("Personal", "INBOX", "All Mail", []string{"42", "43", "44"})
@@ -70,22 +116,7 @@ func TestNativeMoveGroupSingleDispatch(t *testing.T) {
 	if len(moves) != 1 {
 		t.Fatalf("expected one core/move for the group, got %d", len(moves))
 	}
-	direct := moves[0].Params["----"]
-	if direct.Kind != "list" || len(direct.Items) != 3 {
-		t.Fatalf("move direct object kind=%s items=%d", direct.Kind, len(direct.Items))
-	}
-	for i, want := range []int64{42, 43, 44} {
-		ref := direct.Items[i]
-		if ref.Kind != "object" || ref.Fields["want"].Code != "mssg" {
-			t.Fatalf("move item %d kind=%s", i, ref.Kind)
-		}
-		if ref.Fields["seld"].Kind != "int" || ref.Fields["seld"].Number != want {
-			t.Fatalf("move item %d references message %v, want %d", i, ref.Fields["seld"].Number, want)
-		}
-		if key := f.key(ref.Fields["from"]); key != "mbxp:inbox" {
-			t.Fatalf("move item %d is scoped to %s, want mbxp:inbox", i, key)
-		}
-	}
+	assertGroupMoveSelector(t, f, moves[0], "mbxp:inbox", 42, 43, 44)
 	if key := f.key(moves[0].Params["insh"]); key != "mbxp:archive" {
 		t.Fatalf("move destination = %s, want mbxp:archive", key)
 	}
@@ -116,9 +147,10 @@ func TestNativeMoveGroupMissingIDClassified(t *testing.T) {
 		t.Fatalf("missing = %v", missing)
 	}
 	moves := eventsWithID(f, "move")
-	if len(moves) != 1 || len(moves[0].Params["----"].Items) != 2 {
+	if len(moves) != 1 {
 		t.Fatalf("expected one move over the 2 confirmed refs, got %d moves", len(moves))
 	}
+	assertGroupMoveSelector(t, f, moves[0], "mbxp:inbox", 42, 43)
 	// The wholesale bulk read fails on the missing member; the per-item
 	// fallback then re-confirms each ref individually.
 	if len(confirmReads(f)) != 1 {
@@ -188,7 +220,7 @@ func TestNativeMoveGroupRejectionIsReplayable(t *testing.T) {
 	f, c := moveGroupFixture(t, 42, 43)
 	f.fail = func(event appleevents.Event) error {
 		if event.ID == "move" {
-			return &appleevents.Error{Code: -1708, Message: "no handler for list move", Attempted: true}
+			return &appleevents.Error{Code: -1708, Message: "no handler for group move", Attempted: true}
 		}
 		return nil
 	}
@@ -201,7 +233,7 @@ func TestNativeMoveGroupRejectionIsReplayable(t *testing.T) {
 	}
 	var uncertain *moveGroupUncertainError
 	if errors.As(err, &uncertain) {
-		t.Fatal("a rejected list move must not be classified uncertain")
+		t.Fatal("a rejected group move must not be classified uncertain")
 	}
 	if len(moved) != 0 || len(missing) != 0 {
 		t.Fatalf("moved=%v missing=%v after rejection", moved, missing)
@@ -211,11 +243,11 @@ func TestNativeMoveGroupRejectionIsReplayable(t *testing.T) {
 	}
 }
 
-func TestNativeMoveGroupMidListFailureIsUncertain(t *testing.T) {
+func TestNativeMoveGroupMidGroupFailureIsUncertain(t *testing.T) {
 	f, c := moveGroupFixture(t, 42, 43)
 	f.fail = func(event appleevents.Event) error {
 		if event.ID == "move" {
-			return &appleevents.Error{Code: -1728, Message: "element missing mid-list", Attempted: true}
+			return &appleevents.Error{Code: -1728, Message: "element missing mid-group", Attempted: true}
 		}
 		return nil
 	}
@@ -228,7 +260,7 @@ func TestNativeMoveGroupMidListFailureIsUncertain(t *testing.T) {
 		t.Fatalf("error %v is not uncertain", err)
 	}
 	if errors.Is(err, errMoveGroupRejected) {
-		t.Fatal("a mid-list failure must not be classified as rejection")
+		t.Fatal("a mid-group failure must not be classified as rejection")
 	}
 	if len(moved) != 0 {
 		t.Fatalf("moved = %v after an uncertain failure", moved)
@@ -334,7 +366,7 @@ func TestNativeMoveGroupTimeoutKeepsPhaseTrace(t *testing.T) {
 	}
 	var uncertain *moveGroupUncertainError
 	if !errors.As(err, &uncertain) {
-		t.Fatal("a timeout mid-list must remain discoverable as uncertain")
+		t.Fatal("a timeout mid-group must remain discoverable as uncertain")
 	}
 	if len(moved) != 0 {
 		t.Fatalf("moved = %v after a timeout", moved)
@@ -367,12 +399,8 @@ func TestNativeMoveGroupSplitsOversizedGroups(t *testing.T) {
 	if len(moves) != 2 {
 		t.Fatalf("expected the group to split into 2 moves, got %d", len(moves))
 	}
-	if got := len(moves[0].Params["----"].Items); got != maxMoveGroupRefs {
-		t.Fatalf("first move carried %d refs, want %d", got, maxMoveGroupRefs)
-	}
-	if got := len(moves[1].Params["----"].Items); got != 1 {
-		t.Fatalf("second move carried %d refs, want 1", got)
-	}
+	assertGroupMoveSelector(t, f, moves[0], "mbxp:inbox", fixtureIDs[:maxMoveGroupRefs]...)
+	assertGroupMoveSelector(t, f, moves[1], "mbxp:inbox", fixtureIDs[maxMoveGroupRefs:]...)
 }
 
 func TestMoveGroupTimeoutScaling(t *testing.T) {

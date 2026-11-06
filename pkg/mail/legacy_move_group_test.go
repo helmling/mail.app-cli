@@ -27,7 +27,7 @@ func TestLegacyMoveGroupParsesStatuses(t *testing.T) {
 		},
 		{
 			name:    "rejected is replayable and keeps per-ID status",
-			output:  `{"status":"rejected","moved":["42"],"missing":["44"],"message":"no list moves"}`,
+			output:  `{"status":"rejected","moved":["42"],"missing":["44"],"message":"no grouped moves"}`,
 			moved:   []string{"42"},
 			missing: []string{"44"},
 			checkErr: func(t *testing.T, err error) {
@@ -38,7 +38,7 @@ func TestLegacyMoveGroupParsesStatuses(t *testing.T) {
 		},
 		{
 			name:   "uncertain is never replayed",
-			output: `{"status":"uncertain","moved":["42"],"missing":[],"message":"mid-list failure"}`,
+			output: `{"status":"uncertain","moved":["42"],"missing":[],"message":"mid-group failure"}`,
 			moved:  []string{"42"},
 			checkErr: func(t *testing.T, err error) {
 				var uncertain *moveGroupUncertainError
@@ -175,7 +175,9 @@ printf '%s' '{"status":"ok","moved":["42","43","44"],"missing":[]}'
 		`const ids = ["42","43","44"];`,
 		"function messageById",
 		"function findMailbox",
-		"mail.move(",
+		"function idSelector",
+		"mbox.messages.whose({_or:",
+		"mail.move(idSelector(",
 		fmt.Sprintf("start += %d", maxMoveGroupRefs),
 		"JSON.stringify(reply);",
 	} {
@@ -184,10 +186,10 @@ printf '%s' '{"status":"ok","moved":["42","43","44"],"missing":[]}'
 		}
 	}
 	if strings.Contains(text, ".mailbox = destMbox") {
-		t.Errorf("group script must move the list, not set per-item mailboxes")
+		t.Errorf("group script must move the group, not set per-item mailboxes")
 	}
 	if got := strings.Count(text, "mail.move("); got != 1 {
-		t.Errorf("mail.move call sites = %d, want the one list dispatch", got)
+		t.Errorf("mail.move call sites = %d, want the one group dispatch", got)
 	}
 }
 
@@ -266,12 +268,12 @@ func TestRunBatchLegacyMoveGroupUncertainStopsRun(t *testing.T) {
 	t.Setenv("LEGACY_GROUP_EXCHANGE_LOG", exchangeLog)
 	writeFakeOsaScript(t, `while IFS= read -r line; do
  printf 'exchange\n' >> "$LEGACY_GROUP_EXCHANGE_LOG"
- printf '{"output":"%s"}\n' '{\"status\":\"uncertain\",\"moved\":[\"42\"],\"missing\":[],\"message\":\"mid-list failure\"}'
+ printf '{"output":"%s"}\n' '{\"status\":\"uncertain\",\"moved\":[\"42\"],\"missing\":[],\"message\":\"mid-group failure\"}'
 done
 `)
 	result, err := RunBatch(NewClient(), BatchOptions{Action: "move", ReuseBridge: true, Receipt: journal}, moveBatchItems(2), MoveMutator(false))
 	var uncertain *moveGroupUncertainError
-	if !errors.As(err, &uncertain) || !strings.Contains(err.Error(), "mid-list failure") {
+	if !errors.As(err, &uncertain) || !strings.Contains(err.Error(), "mid-group failure") {
 		t.Fatalf("err = %v, want uncertain outcome with script cause", err)
 	}
 	if result.Succeeded != 1 || len(result.Items) != 2 || result.Items[1].Status != "unknown" {
@@ -296,7 +298,7 @@ n=0
 while IFS= read -r line; do
  n=$((n+1))
  if [ "$n" -eq 1 ]; then
-  printf '{"output":"%s"}\n' '{\"status\":\"rejected\",\"moved\":[],\"missing\":[],\"message\":\"no list moves\"}'
+  printf '{"output":"%s"}\n' '{\"status\":\"rejected\",\"moved\":[],\"missing\":[],\"message\":\"no grouped moves\"}'
  else
   printf '{"output":"Success"}\n'
  fi
@@ -319,7 +321,7 @@ done
 		t.Fatalf("bridge launches = %q, %v; replay must reuse the session", launches, err)
 	}
 
-	// A latched client never offers the list form again.
+	// A latched client never offers the group form again.
 	writeFakeOsaScript(t, `printf 'launch\n' >> "$LEGACY_GROUP_LAUNCH_LOG"
 while IFS= read -r line; do printf '{"output":"Success"}\n'; done
 `)

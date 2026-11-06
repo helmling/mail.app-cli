@@ -282,7 +282,7 @@ func (r *batchRunner) finishMutation(item *BatchItem, err error) error {
 
 // moveGroupsEligible reports whether this run's chunks may collapse their
 // moves into group dispatch: the built-in move mutator, before Mail has
-// refused the list form. Both backends dispatch groups — the native
+// refused the grouped form. Both backends dispatch groups — the native
 // automation transaction and the legacy one-script run — so only a custom
 // mutator or another action keeps the per-item path.
 func (r *batchRunner) moveGroupsEligible(mutate Mutator) bool {
@@ -397,7 +397,7 @@ func (r *batchRunner) prepareMoveItems(chunkClient *Client, chunk []BatchItem) (
 }
 
 // moveGroupKey identifies the dispatch group of a move item: messages that
-// share account, source, and destination are moved by one list event.
+// share account, source, and destination are moved by one group event.
 type moveGroupKey struct {
 	account string
 	source  string
@@ -428,8 +428,8 @@ func groupMoveItems(pending []BatchItem) []moveGroup {
 // applyMoveGroup sends one homogeneous move group through the backend's
 // bulk primitive and maps its outcome onto the per-item receipt. Confirmed and
 // moved items succeed; unconfirmed items failed as not found without ever
-// being dispatched; Mail refusing the list form latches the refusal for the
-// process and replays the rest per item; any other failure leaves the
+// being dispatched; Mail refusing the grouped form latches the refusal for
+// the process and replays the rest per item; any other failure leaves the
 // dispatched items unknown and stops the run.
 func (r *batchRunner) applyMoveGroup(chunkClient *Client, group moveGroup, mutate Mutator) error {
 	client, opts := r.client, r.opts
@@ -460,7 +460,7 @@ func (r *batchRunner) applyMoveGroup(chunkClient *Client, group moveGroup, mutat
 
 	if err != nil && errors.Is(err, errMoveGroupRejected) {
 		// Nothing unaccounted for was applied, so per-item replay is safe —
-		// and it keeps today's classification. Stop offering the list form
+		// and it keeps today's classification. Stop offering the group form
 		// for the rest of the process.
 		client.shared.moveGroupRejected.Store(true)
 		for _, item := range group.items {
@@ -510,7 +510,7 @@ func (r *batchRunner) applyMoveGroup(chunkClient *Client, group moveGroup, mutat
 }
 
 // applyGroupItem mutates one group item outside the bulk event — a singleton
-// group or the per-item replay after Mail refused the list form — counting
+// group or the per-item replay after Mail refused the grouped form — counting
 // it as attempted only now, when its outcome is about to be recorded.
 func (r *batchRunner) applyGroupItem(chunkClient *Client, item BatchItem, mutate Mutator) error {
 	r.result.Attempted++

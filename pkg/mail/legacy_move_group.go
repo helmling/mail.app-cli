@@ -8,16 +8,17 @@ import (
 
 // legacyMoveGroup moves every id from one source mailbox to one destination
 // in a single JXA run: the account, both mailboxes, and every message are
-// resolved first, then the confirmed references move in list form — at most
-// maxMoveGroupRefs per move call — and the run reports per-ID status as one
-// JSON reply. The outcome contract matches nativeMoveGroup: it returns the
-// ids the script confirmed and moved, and the ids it could not confirm in
-// the source; those were never dispatched. Ids in neither list were not
-// safely completed and the error classifies them: a "rejected" reply proves
-// Mail refused the list form before executing it, so those ids may be
-// re-sent per item; an "error" reply proves the run stopped before any
-// mutation; any other failure — a lost process, a timeout, an unparsable
-// reply — leaves the outcome uncertain and they must never be replayed.
+// resolved first, then the confirmed ids move as one whose-clause selector —
+// at most maxMoveGroupRefs ids per move call — and the run reports per-ID
+// status as one JSON reply. The outcome contract matches nativeMoveGroup: it
+// returns the ids the script confirmed and moved, and the ids it could not
+// confirm in the source; those were never dispatched. Ids in neither list
+// were not safely completed and the error classifies them: a "rejected"
+// reply proves Mail refused the grouped move before executing it, so those
+// ids may be re-sent per item; an "error" reply proves the run stopped
+// before any mutation; any other failure — a lost process, a timeout, an
+// unparsable reply — leaves the outcome uncertain and they must never be
+// replayed.
 func (c *Client) legacyMoveGroup(account, mailbox, destination string, ids []string) (moved, missing []string, err error) {
 	if len(ids) == 0 {
 		return nil, nil, nil
@@ -76,10 +77,11 @@ func classifyLegacyMoveGroupTransport(err error) error {
 }
 
 // legacyMoveGroupScript builds the one JXA run a legacy group performs:
-// per-ID resolution with the same helper the per-item move uses, one list
-// move per maxMoveGroupRefs confirmed references, and a JSON status reply.
-// The script catches its own failures so a reply always classifies the
-// outcome; only the transport losing the process or the reply is uncertain.
+// per-ID resolution with the same helper the per-item move uses, one
+// whose-clause move per maxMoveGroupRefs confirmed ids, and a JSON status
+// reply. The script catches its own failures so a reply always classifies
+// the outcome; only the transport losing the process or the reply is
+// uncertain.
 func legacyMoveGroupScript(account, mailbox, destination string, ids []string) string {
 	encoded, err := json.Marshal(ids)
 	if err != nil {
@@ -97,6 +99,12 @@ function moveGroupRefused(e) {
 	const number = e ? e.errorNumber : undefined;
 	return number === -1708 || number === -1700 || number === -10000;
 }
+function idSelector(mbox, ids) {
+	if (ids.length === 1) {
+		return mbox.messages.whose({id: {_equals: ids[0]}});
+	}
+	return mbox.messages.whose({_or: ids.map(function (id) { return {id: {_equals: id}}; })});
+}
 let reply;
 try {
 	const acc = mail.accounts.byName('%s');
@@ -107,30 +115,30 @@ try {
 	const pending = [];
 	const missing = [];
 	for (const id of ids) {
-		const msg = messageById(sourceMbox, String(id));
-		if (msg === null) {
+		if (messageById(sourceMbox, String(id)) === null) {
 			missing.push(String(id));
 			continue;
 		}
-		pending.push({id: String(id), msg: msg});
+		pending.push(String(id));
 	}
 	const moved = [];
 	try {
 		for (let start = 0; start < pending.length; start += %d) {
 			const end = Math.min(start + %d, pending.length);
-			mail.move(pending.slice(start, end).map(function (entry) { return entry.msg; }), {to: destMbox});
+			mail.move(idSelector(sourceMbox, pending.slice(start, end)), {to: destMbox});
 			for (let i = start; i < end; i++) {
-				moved.push(pending[i].id);
+				moved.push(pending[i]);
 			}
 		}
 		reply = {status: 'ok', moved: moved, missing: missing};
 	} catch (e) {
 		if (moveGroupRefused(e)) {
-			// Mail refused the list form itself: a parameter error that
-			// precedes execution, so nothing unaccounted for was applied.
+			// Mail refused the grouped move itself: a parameter error
+			// that precedes execution, so nothing unaccounted for was
+			// applied.
 			reply = {status: 'rejected', moved: moved, missing: missing, message: String(e)};
 		} else {
-			// A list move that fails mid-execution may have applied a
+			// A group move that fails mid-execution may have applied a
 			// prefix; partial application cannot be ruled out.
 			reply = {status: 'uncertain', moved: moved, missing: missing, message: String(e)};
 		}

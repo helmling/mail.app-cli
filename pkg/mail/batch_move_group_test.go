@@ -44,12 +44,13 @@ func runFixtureMoveBatch(t *testing.T, c *Client, opts BatchOptions, items []Bat
 	return result, readJournalEvents(t, journal.Path()), err
 }
 
-// listMoveEvents are core/move events whose direct object is a list: the
-// group dispatch form. Per-item moves carry a single reference.
-func listMoveEvents(f *nativeReadFixture) []appleevents.Event {
+// groupMoveEvents are core/move events carrying the group dispatch form: a
+// whose-clause selector over the source mailbox. Per-item moves carry a
+// single reference.
+func groupMoveEvents(f *nativeReadFixture) []appleevents.Event {
 	var out []appleevents.Event
 	for _, event := range eventsWithID(f, "move") {
-		if event.Params["----"].Kind == "list" {
+		if isGroupMove(event) {
 			out = append(out, event)
 		}
 	}
@@ -59,7 +60,7 @@ func listMoveEvents(f *nativeReadFixture) []appleevents.Event {
 func itemMoveEvents(f *nativeReadFixture) []appleevents.Event {
 	var out []appleevents.Event
 	for _, event := range eventsWithID(f, "move") {
-		if event.Params["----"].Kind != "list" {
+		if !isGroupMove(event) {
 			out = append(out, event)
 		}
 	}
@@ -75,10 +76,11 @@ func TestRunBatchMoveGroupCollapsesHomogeneousChunk(t *testing.T) {
 	if result.Attempted != 3 || result.Succeeded != 3 || result.Failed != 0 || result.Chunks != 1 {
 		t.Fatalf("result = %+v", result)
 	}
-	moves := listMoveEvents(f)
-	if len(moves) != 1 || len(moves[0].Params["----"].Items) != 3 {
-		t.Fatalf("list moves = %d, want one over 3 references", len(moves))
+	moves := groupMoveEvents(f)
+	if len(moves) != 1 {
+		t.Fatalf("group moves = %d, want one over 3 references", len(moves))
 	}
+	assertGroupMoveSelector(t, f, moves[0], "mbxp:inbox", 42, 43, 44)
 	reads := confirmReads(f)
 	if len(reads) != 1 || len(reads[0].Params["----"].Items) != 3 {
 		t.Fatalf("confirm reads = %d, want one over 3 references", len(reads))
@@ -129,10 +131,11 @@ func TestRunBatchMoveThirtyMessagesShareOneTransaction(t *testing.T) {
 	if result.Chunks != 1 || result.Succeeded != 30 || result.Attempted != 30 {
 		t.Fatalf("result = %+v", result)
 	}
-	moves := listMoveEvents(f)
-	if len(moves) != 1 || len(moves[0].Params["----"].Items) != 30 {
-		t.Fatalf("list moves = %d, want one over 30 references", len(moves))
+	moves := groupMoveEvents(f)
+	if len(moves) != 1 {
+		t.Fatalf("group moves = %d, want one over 30 references", len(moves))
 	}
+	assertGroupMoveSelector(t, f, moves[0], "mbxp:inbox", ids...)
 	if reads := confirmReads(f); len(reads) != 1 || len(reads[0].Params["----"].Items) != 30 {
 		t.Fatalf("confirm reads = %d, want one over 30 references", len(reads))
 	}
@@ -149,12 +152,12 @@ func TestRunBatchMoveThirtyMessagesShareOneTransaction(t *testing.T) {
 func TestRunBatchMoveGroupRejectionReplaysPerItemAndLatches(t *testing.T) {
 	f, c := moveGroupFixture(t, 42, 43, 44, 45)
 	f.fail = func(event appleevents.Event) error {
-		if event.ID == "move" && event.Params["----"].Kind == "list" {
-			return &appleevents.Error{Code: -1708, Message: "no handler for list move", Attempted: true}
+		if isGroupMove(event) {
+			return &appleevents.Error{Code: -1708, Message: "no handler for group move", Attempted: true}
 		}
 		return nil
 	}
-	// Two chunks: the second must not offer the list form again after the
+	// Two chunks: the second must not offer the group form again after the
 	// first group's refusal latched.
 	result, events, err := runFixtureMoveBatch(t, c, BatchOptions{ChunkSize: 2}, moveBatchItems(4), MoveMutator(false))
 	if err != nil {
@@ -163,8 +166,8 @@ func TestRunBatchMoveGroupRejectionReplaysPerItemAndLatches(t *testing.T) {
 	if result.Succeeded != 4 || result.Failed != 0 || result.Attempted != 4 {
 		t.Fatalf("result = %+v", result)
 	}
-	if got := len(listMoveEvents(f)); got != 1 {
-		t.Fatalf("list move attempts = %d, want 1", got)
+	if got := len(groupMoveEvents(f)); got != 1 {
+		t.Fatalf("group move attempts = %d, want 1", got)
 	}
 	if got := len(itemMoveEvents(f)); got != 4 {
 		t.Fatalf("per-item moves = %d, want 4", got)
@@ -180,7 +183,7 @@ func TestRunBatchMoveGroupRejectionReplaysPerItemAndLatches(t *testing.T) {
 func TestRunBatchMoveGroupUncertainOutcomeRecordsUnknownsAndStops(t *testing.T) {
 	f, c := moveGroupFixture(t, 42, 43, 44)
 	f.fail = func(event appleevents.Event) error {
-		if event.ID == "move" && event.Params["----"].Kind == "list" {
+		if isGroupMove(event) {
 			return fmt.Errorf("automation bridge vanished mid-event")
 		}
 		return nil
@@ -198,7 +201,7 @@ func TestRunBatchMoveGroupUncertainOutcomeRecordsUnknownsAndStops(t *testing.T) 
 			t.Fatalf("item %s status = %s, want unknown", item.ID, item.Status)
 		}
 	}
-	// Uncertain messages are never replayed: the failed list move is the
+	// Uncertain messages are never replayed: the failed group move is the
 	// only move event the run ever sent.
 	if got := len(itemMoveEvents(f)); got != 0 {
 		t.Fatalf("per-item moves after uncertain outcome = %d, want 0", got)
@@ -231,10 +234,11 @@ func TestRunBatchMoveGroupKeepsNotFoundClassification(t *testing.T) {
 		t.Fatalf("missing item = %+v", result.Items[1])
 	}
 	// Only the confirmed reference was dispatched.
-	moves := listMoveEvents(f)
-	if len(moves) != 1 || len(moves[0].Params["----"].Items) != 1 {
-		t.Fatalf("list moves = %d, want one over 1 reference", len(moves))
+	moves := groupMoveEvents(f)
+	if len(moves) != 1 {
+		t.Fatalf("group moves = %d, want one over 1 reference", len(moves))
 	}
+	assertGroupMoveSelector(t, f, moves[0], "mbxp:inbox", 42)
 	if got := countJournalEvents(events, "mutation_failed"); got != 1 {
 		t.Fatalf("mutation_failed records = %d, want 1", got)
 	}
@@ -259,10 +263,11 @@ func TestRunBatchMoveGroupInvalidIDFailsWithPerItemWords(t *testing.T) {
 		result.Items[0].Error != `invalid message ID: "not-a-number"` {
 		t.Fatalf("invalid item = %+v", result.Items[0])
 	}
-	moves := listMoveEvents(f)
-	if len(moves) != 1 || len(moves[0].Params["----"].Items) != 2 {
-		t.Fatalf("list moves = %d, want one over the 2 valid references", len(moves))
+	moves := groupMoveEvents(f)
+	if len(moves) != 1 {
+		t.Fatalf("group moves = %d, want one over the 2 valid references", len(moves))
 	}
+	assertGroupMoveSelector(t, f, moves[0], "mbxp:inbox", 42, 44)
 	if result.Succeeded != 2 {
 		t.Fatalf("result = %+v", result)
 	}
@@ -280,8 +285,8 @@ func TestRunBatchMoveGroupSingletonStaysPerItem(t *testing.T) {
 	if result.Succeeded != 1 {
 		t.Fatalf("result = %+v", result)
 	}
-	if got := len(listMoveEvents(f)); got != 0 {
-		t.Fatalf("list moves = %d, want 0", got)
+	if got := len(groupMoveEvents(f)); got != 0 {
+		t.Fatalf("group moves = %d, want 0", got)
 	}
 	if got := len(itemMoveEvents(f)); got != 1 {
 		t.Fatalf("per-item moves = %d, want 1", got)
@@ -304,8 +309,8 @@ func TestRunBatchMoveCustomMutatorKeepsPerItemPath(t *testing.T) {
 	}
 	// A mutator the runner cannot recognize is never bypassed, even for a
 	// homogeneous native chunk.
-	if got := len(listMoveEvents(f)); got != 0 {
-		t.Fatalf("list moves = %d, want 0", got)
+	if got := len(groupMoveEvents(f)); got != 0 {
+		t.Fatalf("group moves = %d, want 0", got)
 	}
 	if got := len(itemMoveEvents(f)); got != 3 {
 		t.Fatalf("per-item moves = %d, want 3", got)
@@ -342,8 +347,8 @@ func TestRunBatchMoveGroupProgressLines(t *testing.T) {
 			t.Fatalf("progress line %d = %q, want %q", i, got[i], want[i])
 		}
 	}
-	if got := len(listMoveEvents(f)); got != 2 {
-		t.Fatalf("list moves = %d, want one per group", got)
+	if got := len(groupMoveEvents(f)); got != 2 {
+		t.Fatalf("group moves = %d, want one per group", got)
 	}
 }
 

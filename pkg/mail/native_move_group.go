@@ -9,10 +9,10 @@ import (
 	"github.com/0xSMW/mail.app-cli/v3/internal/appleevents"
 )
 
-// errMoveGroupRejected reports Mail refusing the list form of move before
+// errMoveGroupRejected reports Mail refusing the grouped form of move before
 // executing it. Nothing was applied, so the un-dispatched messages may be
 // re-sent individually.
-var errMoveGroupRejected = errors.New("Mail refused the list form of move")
+var errMoveGroupRejected = errors.New("Mail refused the grouped form of move")
 
 // moveGroupUncertainError marks a failed group move whose partial application
 // cannot be ruled out. Its messages are unknown and must never be replayed.
@@ -24,9 +24,9 @@ func (e *moveGroupUncertainError) Error() string {
 
 func (e *moveGroupUncertainError) Unwrap() error { return e.cause }
 
-// maxMoveGroupRefs bounds one move event's direct object. Larger groups split
-// into consecutive sub-events inside the same transaction, each with its own
-// outcome.
+// maxMoveGroupRefs bounds one move event's whose-clause selector. Larger
+// groups split into consecutive sub-events inside the same transaction, each
+// with its own outcome.
 const maxMoveGroupRefs = 100
 
 // maxMoveGroupTimeout matches the ceiling ValidateBatchOptions enforces for
@@ -57,14 +57,15 @@ type groupMessageRef struct {
 
 // nativeMoveGroup moves every id from one source mailbox to one destination
 // inside a single automation transaction: the account, both mailboxes, and
-// message existence are resolved once, then one core/move carries the
-// confirmed references as a list. It returns the ids Mail confirmed and
+// message existence are resolved once, then one core/move carries a
+// whose-clause selector covering the confirmed ids — every message of the
+// source whose ID equals one of them. It returns the ids Mail confirmed and
 // moved, and the ids it could not confirm in the source; those were never
 // dispatched. Ids in neither list were not safely completed and the error
 // classifies them: an error wrapping errMoveGroupRejected proves Mail
-// refused the list form before executing it, so those ids may be re-sent per
-// item; any other error leaves the outcome uncertain and they must never be
-// replayed.
+// refused the grouped move before executing it, so those ids may be re-sent
+// per item; any other error leaves the outcome uncertain and they must never
+// be replayed.
 func (c *Client) nativeMoveGroup(account, mailbox, destination string, ids []string) (moved, missing []string, err error) {
 	if len(ids) == 0 {
 		return nil, nil, nil
@@ -99,19 +100,15 @@ func (c *Client) nativeMoveGroup(account, mailbox, destination string, ids []str
 			for start := 0; start < len(refs); start += maxMoveGroupRefs {
 				end := min(start+maxMoveGroupRefs, len(refs))
 				batch := refs[start:end]
-				list := make([]appleevents.Value, len(batch))
-				for i, ref := range batch {
-					list[i] = ref.ref
-				}
-				params := map[string]appleevents.Value{"----": appleevents.List(list...), "insh": dest}
+				params := map[string]appleevents.Value{"----": moveGroupSelector(source, batch), "insh": dest}
 				if _, err := n.eventWithTimeout("core", "move", params, timeout); err != nil {
 					if nativeUnsupportedRead(err) {
-						// Mail rejected the list form itself: a parameter
+						// Mail rejected the grouped move itself: a parameter
 						// error that precedes execution, so nothing was
 						// applied and per-item dispatch remains safe.
 						return fmt.Errorf("%w: %v", errMoveGroupRejected, err)
 					}
-					// A list move that fails mid-execution may have applied
+					// A group move that fails mid-execution may have applied
 					// a prefix; partial application cannot be ruled out.
 					return &moveGroupUncertainError{cause: err}
 				}
@@ -123,6 +120,20 @@ func (c *Client) nativeMoveGroup(account, mailbox, destination string, ids []str
 		})
 	})
 	return moved, missing, err
+}
+
+// moveGroupSelector builds the direct object of one group move. Mail's move
+// command accepts a single specifier, not a list of references — a list
+// direct object is refused with a coercion error — so the group travels as
+// one whose-clause selector: every message of the source mailbox whose ID
+// equals one of the confirmed references, joined by OR over at most
+// maxMoveGroupRefs terms per event.
+func moveGroupSelector(source appleevents.Value, refs []groupMessageRef) appleevents.Value {
+	tests := make([]appleevents.Value, len(refs))
+	for i, ref := range refs {
+		tests[i] = appleevents.Comparison("=   ", appleevents.Property("ID  ", appleevents.Examined()), appleevents.Int(ref.num))
+	}
+	return appleevents.ByTest("mssg", appleevents.Logical("OR  ", tests...), source)
 }
 
 // confirmGroupRefs proves each message exists in the source mailbox before
@@ -171,7 +182,7 @@ func (n *nativeMail) confirmGroupRefs(source appleevents.Value, ids []string) (r
 			// The bridge failed before Mail answered; no fallback.
 			return gerr
 		}
-		// Mail refused the list form or returned an unusable shape: confirm
+		// Mail refused the bulk read or returned an unusable shape: confirm
 		// each reference individually, preserving not-found classification.
 		confirmed := make([]groupMessageRef, 0, len(refs))
 		for _, ref := range refs {

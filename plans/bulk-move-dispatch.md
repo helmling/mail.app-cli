@@ -14,9 +14,14 @@ Mail's activity window shows the CLI's moves arriving as many small, restarting
 batches instead of one "Moving 1 of 30".
 
 This plan collapses a homogeneous move group to a handful of events by sending
-one `core/move` whose direct object is a list of message references — the same
-operation Mail's own interface performs. The remaining wall time is Mail's
-irreducible copy work into the destination, identical to a native drag move.
+one `core/move` whose direct object is a single whose-clause selector: every
+message of the source mailbox whose ID equals one of the confirmed IDs, joined
+by OR. The original design sent a list of message references — the operation
+Mail's own interface appears to perform — but live probing proved Mail refuses
+a list direct object for `move` (-1700, encoder-independent across native
+Apple Events, JXA, and AppleScript), while the whose-clause selector is
+accepted. The remaining wall time is Mail's irreducible copy work into the
+destination, identical to a native drag move.
 
 ## Scope and invariants
 
@@ -55,10 +60,13 @@ Per group, inside one `withNativeAutomation` transaction:
 1. Resolve account once (`n.account`), source mailbox once, destination
    mailbox once (same alias logic as today, `n.mailbox`). Replaces 2N mailbox
    walks with 2.
-2. Build references without per-item events: `appleevents.ByID("mssg",
-   appleevents.Int(id), source)` per item, joined with `appleevents.List`
-   (`internal/appleevents/api.go:57,65`). Message IDs are numeric and
-   validated the same way `n.message` validates them today.
+2. Build the selector without per-item events: one ID-equality comparison per
+   item — `appleevents.Comparison("=   ", appleevents.Property("ID  ",
+   appleevents.Examined()), appleevents.Int(id))` — joined with
+   `appleevents.Logical("OR  ", ...)` and wrapped in
+   `appleevents.ByTest("mssg", ...)` over the source mailbox. Message IDs are
+   numeric and validated the same way `n.message` validates them today;
+   missing IDs simply never match the selector.
 3. One bulk existence `getd` asking for the `ID  ` property of every
    reference, the same list-of-property-specifiers event the native read path
    already uses (`getFields`, `pkg/mail/native_backend.go:179`; proven against
@@ -66,15 +74,16 @@ Per group, inside one `withNativeAutomation` transaction:
    back are confirmed; if Mail rejects the whole list read, fall back to
    per-item existence checks for this group only, which preserves today's
    clean "message not found" classification.
-4. One `core/move` with `----` = the confirmed reference list and `insh` = the
-   destination, sent through `eventWithTimeout` with the group timeout.
+4. One `core/move` with `----` = the whose-clause selector over the confirmed
+   IDs and `insh` = the destination, sent through `eventWithTimeout` with the
+   group timeout.
 
 Expected event count for a 30-message homogeneous group: about 6-9 (account 1,
 two mailbox walks ~2-4, existence 1, move 1), versus roughly 300 today.
 
 ### Group cap and splitting
 
-Cap the reference list per move event (100 refs initially). Larger groups
+Cap the selector's ID terms per move event (100 initially). Larger groups
 split into consecutive sub-events within the same transaction; each sub-event
 is its own bounded dispatch with its own outcome mapping. Even at the cap this
 is two orders of magnitude fewer round trips than per-message dispatch.
@@ -94,14 +103,14 @@ working through the list.
 - An item's reference was not confirmed in step 3 → `failed` with "message not
   found"; no mutation was issued for it.
 - The move event fails in a way that proves nothing was applied (for example
-  Mail rejects the list form, or a parameter error precedes execution) → the
+  Mail rejects the grouped form, or a parameter error precedes execution) → the
   runner falls back to the per-item `MoveMutator` for that group, at most once
   per process; later groups skip the bulk path.
 - The move event times out or its reply is lost → every item in the group is
   `unknown` (`mutation_unknown` journal phase, `isUnknownMutationError`,
   `unknown_after_timeout` in `finish()`). No replay. Verification, when
   enabled, classifies each item by stable identity from per-scope snapshots,
-  exactly as it does today; partial application of a list lands in machinery
+  exactly as it does today; partial application of a group lands in machinery
   that already exists.
 
 ### Receipts, journal, and progress
@@ -134,25 +143,25 @@ fallback path use the per-item `Mutator` unchanged.
 ### Legacy backend
 
 One script per group replaces one process per message: resolve each ID
-(`messageById`-style lookup, classify missing ones), move the resolved list to
-the destination (`mail.move(refs, {to: destMbox})`), and return per-ID status
-in one run. The `ReuseBridge` session is reused when active. Semantics mirror
-the native outcome mapping, including the unknown classification for a lost
-process.
+(`messageById`-style lookup, classify missing ones), move the confirmed IDs to
+the destination in the whose form (`mail.move(mbox.messages.whose({_or: [...]},
+{to: destMbox})`), and return per-ID status in one run. The `ReuseBridge`
+session is reused when active. Semantics mirror the native outcome mapping,
+including the unknown classification for a lost process.
 
 ## Release 1: native bulk move primitive
 
 - [x] Add `nativeMoveGroup` next to `nativeMove`: shared account/mailbox
-      resolution, list building, bulk existence read, single `core/move`,
-      alias-aware destination, scaled timeout, phase records
+      resolution, whose-clause selector building, bulk existence read, single
+      `core/move`, alias-aware destination, scaled timeout, phase records
       (`resolve_group`, `confirm_refs`, `bulk_move`).
 - [x] Add the group cap with consecutive splitting inside one transaction.
 - [x] Add rejection-versus-uncertain error classification.
 - [x] Unit tests with the fake descriptor transport
       (`c.shared.nativeSender`, the pattern used throughout
       `pkg/mail/native_*_test.go`): all refs confirmed, one missing,
-      list rejected, timeout mid-list, oversized group splitting, progress and
-      phase traces.
+      grouped form rejected, timeout mid-group, oversized group splitting,
+      progress and phase traces.
 - [x] Live probe test, env-gated like the existing probes
       (`internal/appleevents/permission_timing_probe_test.go` style): moves a
       bounded set of user-authorized disposable messages supplied through
@@ -171,7 +180,7 @@ process.
 - [x] Wire per-item outcome records, the `bulk_move` journal record, group
       progress lines, and the unknown classification through `finish()`.
 - [x] Fallback triggers: singleton groups, mixed keys, Mail rejecting the
-      list form (once per process), and any probe-discovered incompatibility.
+      grouped form (once per process), and any probe-discovered incompatibility.
 - [x] Tests: receipts and journal contents for a group run, unknown items
       after a simulated timeout, verification classifying a partially applied
       group by identity, `--progress` output, chunk-boundary grouping, and the
@@ -181,17 +190,18 @@ process.
 
 ## Release 3: legacy group script
 
-- [x] One JXA script per group with per-ID resolution, list move, and per-ID
-      status, reusing the existing bridge session when `ReuseBridge` is set.
+- [x] One JXA script per group with per-ID resolution, whose-clause move, and
+      per-ID status, reusing the existing bridge session when `ReuseBridge` is
+      set.
 - [x] Unit tests using the fake `osascript` fixtures (the
       `pkg/mail/health_test.go` pattern), covering missing IDs, process
       timeout (unknown, no replay), and status parsing.
 
 ## Release 4: follow-ups (optional, separate changes)
 
-- [ ] List dispatch for `delete` (`core/delo` on a list) and `mark`/`flag`
-      (`core/setd` on a list with one value), following the same grouping and
-      outcome rules.
+- [ ] Group dispatch for `delete` (`core/delo` on a whose-clause selector)
+      and `mark`/`flag` (`core/setd` on a whose-clause selector with one
+      value), following the same grouping and outcome rules.
 - [ ] Batch `MarkReadBefore` with its group.
 - [ ] Revisit Gmail Inbox archive bulk only after the Archive-action semantics
       are understood for multi-message selections.
@@ -218,8 +228,12 @@ message content.
 
 ## Risks
 
-- Mail could reject a list direct object for `core/move`. The probe tests this
-  first; the per-item fallback preserves today's behavior with no user-visible
+- Mail could reject the grouped form of `core/move`. This happened: a list
+  direct object is refused with -1700 on every transport tried (native Apple
+  Events, JXA, AppleScript), encoder-independent. The redesign ships the
+  whose-clause selector, which live probing proved Mail accepts and which
+  moved real messages both directions; if any Mail build refuses that too,
+  the per-item fallback preserves today's behavior with no user-visible
   regression beyond the status quo.
 - A bulk existence read may fail wholesale when one reference is missing. The
   design already falls back to per-item confirmation for that group, so
