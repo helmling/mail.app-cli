@@ -206,6 +206,16 @@ including the unknown classification for a lost process.
 
 ## Release 4: follow-ups (optional, separate changes)
 
+- [ ] Batch RFC identity enrichment in verification snapshots: every
+      observation tick confirms each RFC candidate with its own live read,
+      and each read re-opens an automation session and re-resolves the
+      account and mailboxes — measured at ~2.2s per identity on the probe
+      account, ~65s for a 30-identity tick, which exceeds every allowed
+      `--verify-budget`, so verification at that scale classifies
+      `unknown_after_timeout` even after a fully landed move. Share one
+      automation transaction (or one grouped read) per scope so the tick
+      cost stays flat in batch size; the env-gated read-only
+      `MAIL_AE_IDENTITY_SCALE_PROBE` measures the cost curve.
 - [ ] Group dispatch for `delete` (`core/delo` on a whose-clause selector)
       and `mark`/`flag` (`core/setd` on a whose-clause selector with one
       value), following the same grouping and outcome rules.
