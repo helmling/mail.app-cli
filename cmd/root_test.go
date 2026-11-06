@@ -153,6 +153,65 @@ func TestRunDerivesAutomaticOutputFromSuppliedStdout(t *testing.T) {
 	}
 }
 
+func TestRunColorForcedWhenPiped(t *testing.T) {
+	t.Setenv(config.EnvConfigPath, filepath.Join(t.TempDir(), "config.json"))
+	t.Setenv(config.EnvOutput, "")
+	t.Setenv("NO_COLOR", "")
+	t.Setenv("TERM", "xterm-256color")
+
+	// A pipe drops color even with --plain.
+	a := newApplication()
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if code := a.run([]string{"version", "--plain"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("plain piped exit = %d: %s", code, stderr.String())
+	}
+	if a.writer == nil || a.writer.Format != output.FormatPlain || a.writer.Color {
+		t.Fatalf("plain piped writer = %#v, want plain non-color writer", a.writer)
+	}
+
+	// --color implies the human view and keeps color in a pipe.
+	a = newApplication()
+	stdout.Reset()
+	stderr.Reset()
+	if code := a.run([]string{"version", "--color"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("color piped exit = %d: %s", code, stderr.String())
+	}
+	if a.writer == nil || a.writer.Format != output.FormatPlain || !a.writer.Color {
+		t.Fatalf("color piped writer = %#v, want plain color writer", a.writer)
+	}
+
+	// An explicit --color also overrides NO_COLOR.
+	a = newApplication()
+	t.Setenv("NO_COLOR", "1")
+	stdout.Reset()
+	stderr.Reset()
+	if code := a.run([]string{"version", "--plain", "--color"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("color against NO_COLOR exit = %d: %s", code, stderr.String())
+	}
+	if a.writer == nil || !a.writer.Color {
+		t.Fatalf("NO_COLOR writer = %#v, want color writer", a.writer)
+	}
+
+	// Errors raised before the writer exists honor --color as well.
+	t.Setenv("NO_COLOR", "")
+	stdout.Reset()
+	var errOut bytes.Buffer
+	if code := Run([]string{"nonsense", "--plain"}, &stdout, &errOut); code != 1 {
+		t.Fatalf("plain parse error exit = %d", code)
+	}
+	if strings.Contains(errOut.String(), "\x1b[") {
+		t.Fatalf("plain piped parse error = %q, want no ANSI", errOut.String())
+	}
+	errOut.Reset()
+	if code := Run([]string{"nonsense", "--plain", "--color"}, &stdout, &errOut); code != 1 {
+		t.Fatalf("color parse error exit = %d", code)
+	}
+	if !strings.Contains(errOut.String(), "\x1b[") {
+		t.Fatalf("color piped parse error = %q, want ANSI color", errOut.String())
+	}
+}
+
 func TestRunParseErrorDerivesFallbackOutputFromSuppliedStdout(t *testing.T) {
 	t.Setenv(config.EnvConfigPath, filepath.Join(t.TempDir(), "config.json"))
 	t.Setenv(config.EnvOutput, "")
@@ -262,6 +321,17 @@ func TestPlainAndJSONConflict(t *testing.T) {
 	code, _, stderr := run(t, "version", "--plain", "--json")
 	if code != 1 || !strings.Contains(stderr, "--plain cannot be combined") {
 		t.Fatalf("exit = %d, stderr = %s", code, stderr)
+	}
+}
+
+func TestColorFlagConflicts(t *testing.T) {
+	code, _, stderr := run(t, "version", "--color", "--json")
+	if code != 1 || !strings.Contains(stderr, "--color cannot be combined with --json") {
+		t.Fatalf("color json exit = %d, stderr = %s", code, stderr)
+	}
+	code, _, stderr = run(t, "version", "--color", "--no-color")
+	if code != 1 || !strings.Contains(stderr, "--color cannot be combined with --no-color") {
+		t.Fatalf("color no-color exit = %d, stderr = %s", code, stderr)
 	}
 }
 

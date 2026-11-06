@@ -36,7 +36,7 @@ ctrl+r refresh, ? help, q quit.`,
 			opts := tui.Options{
 				Account:   a.resolved.Account.Value,
 				MessageID: tuiMessage,
-				Color:     output.ColorEnabled(output.FormatPlain, true, a.outFlags.NoColor, os.Getenv),
+				Color:     output.ColorEnabled(output.FormatPlain, true, a.outFlags.Color, a.outFlags.NoColor, os.Getenv),
 			}
 			if a.resolved.Mailbox.Source != config.SourceDefault {
 				// A mailbox, whether from the flag, the environment, or the config
