@@ -28,7 +28,7 @@ const (
 	FormatCount Format = "count"
 )
 
-// Flags mirrors the root persistent flags that pick a format.
+// Flags mirrors the root persistent flags that pick a format or color.
 type Flags struct {
 	JSON    bool
 	Plain   bool
@@ -36,17 +36,24 @@ type Flags struct {
 	IDsOnly bool
 	Count   bool
 	Agent   bool
+	Color   bool
 	NoColor bool
 	JQ      string
 }
 
 // Resolve picks the format. Precedence: --count, --ids-only, --quiet,
-// --json/--jq/--agent, --plain, the configured default, then auto (plain on
-// a terminal, JSON when piped).
+// --json/--jq/--agent, --plain/--color, the configured default, then auto
+// (plain on a terminal, JSON when piped). --color implies --plain.
 func Resolve(f Flags, configured string, stdoutIsTTY bool) (Format, error) {
 	wantsJSON := f.JSON || f.JQ != "" || f.Agent
 	if f.Plain && wantsJSON {
 		return "", clierr.Usage("--plain cannot be combined with --json, --jq, or --agent")
+	}
+	if f.Color && wantsJSON {
+		return "", clierr.Usage("--color cannot be combined with --json, --jq, or --agent")
+	}
+	if f.Color && f.NoColor {
+		return "", clierr.Usage("--color cannot be combined with --no-color")
 	}
 	if f.JQ != "" && (f.IDsOnly || f.Count) {
 		return "", clierr.Usage("--jq cannot be combined with --ids-only or --count")
@@ -60,7 +67,7 @@ func Resolve(f Flags, configured string, stdoutIsTTY bool) (Format, error) {
 		return FormatQuiet, nil
 	case wantsJSON:
 		return FormatJSON, nil
-	case f.Plain:
+	case f.Plain || f.Color:
 		return FormatPlain, nil
 	}
 	switch strings.ToLower(strings.TrimSpace(configured)) {
@@ -89,12 +96,18 @@ func IsTerminal(w io.Writer) bool {
 	return err == nil && info.Mode()&os.ModeCharDevice != 0
 }
 
-// ColorEnabled applies NO_COLOR, TERM=dumb, and the --no-color flag.
-func ColorEnabled(format Format, stdoutIsTTY bool, noColorFlag bool, getenv func(string) string) bool {
-	if format != FormatPlain || !stdoutIsTTY || noColorFlag {
+// ColorEnabled reports whether the human view should carry ANSI color. Color
+// applies to the plain format only: on for a terminal, off in a pipe, unless
+// forceColor turns it on everywhere. An explicit --color also overrides
+// NO_COLOR and TERM=dumb, as no-color.org allows; --no-color always wins.
+func ColorEnabled(format Format, stdoutIsTTY, forceColor, noColorFlag bool, getenv func(string) string) bool {
+	if format != FormatPlain || noColorFlag {
 		return false
 	}
-	if getenv("NO_COLOR") != "" || getenv("TERM") == "dumb" {
+	if forceColor {
+		return true
+	}
+	if !stdoutIsTTY || getenv("NO_COLOR") != "" || getenv("TERM") == "dumb" {
 		return false
 	}
 	return true
@@ -102,10 +115,13 @@ func ColorEnabled(format Format, stdoutIsTTY bool, noColorFlag bool, getenv func
 
 // Writer renders results and errors.
 type Writer struct {
-	Format        Format
-	Stdout        io.Writer
-	Stderr        io.Writer
-	Color         bool
+	Format Format
+	Stdout io.Writer
+	Stderr io.Writer
+	Color  bool
+	// SubjectWidth overrides the built-in subject budgets of the human
+	// view, with the same convention as Printer.SubjectWidth.
+	SubjectWidth  int
 	JQ            string
 	Command       string
 	SchemaVersion int
@@ -253,7 +269,7 @@ func (w *Writer) write(r Result) error {
 		}
 		return writeJSON(w.Stdout, env)
 	default:
-		p := &Printer{Out: w.Stdout, Color: w.Color}
+		p := &Printer{Out: w.Stdout, Color: w.Color, SubjectWidth: w.SubjectWidth}
 		for _, notice := range r.Notices {
 			fmt.Fprintln(w.Stderr, p.Dim("notice: "+notice))
 		}

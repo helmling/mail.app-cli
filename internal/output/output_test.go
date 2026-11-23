@@ -42,6 +42,10 @@ func TestResolvePrecedence(t *testing.T) {
 		{Flags{Quiet: true, JSON: true}, "", true, FormatQuiet},
 		{Flags{IDsOnly: true, Quiet: true}, "", true, FormatIDs},
 		{Flags{Count: true, IDsOnly: true}, "", true, FormatCount},
+		{Flags{Color: true}, "auto", true, FormatPlain},
+		{Flags{Color: true}, "auto", false, FormatPlain},
+		{Flags{Color: true}, "json", false, FormatPlain},
+		{Flags{Color: true, Count: true}, "", false, FormatCount},
 	}
 	for _, tc := range cases {
 		got, err := Resolve(tc.flags, tc.configured, tc.tty)
@@ -55,8 +59,46 @@ func TestResolvePrecedence(t *testing.T) {
 	if _, err := Resolve(Flags{Plain: true, JSON: true}, "", true); err == nil {
 		t.Fatal("--plain with --json was accepted")
 	}
+	if _, err := Resolve(Flags{Color: true, JSON: true}, "", true); err == nil {
+		t.Fatal("--color with --json was accepted")
+	}
+	if _, err := Resolve(Flags{Color: true, NoColor: true}, "", true); err == nil {
+		t.Fatal("--color with --no-color was accepted")
+	}
 	if _, err := Resolve(Flags{JQ: ".", Count: true}, "", true); err == nil {
 		t.Fatal("--jq with --count was accepted")
+	}
+}
+
+func TestColorEnabled(t *testing.T) {
+	getenv := func(kv map[string]string) func(string) string {
+		return func(k string) string { return kv[k] }
+	}
+	cases := []struct {
+		name    string
+		format  Format
+		tty     bool
+		force   bool
+		noColor bool
+		getenv  func(string) string
+		want    bool
+	}{
+		{"plain on a terminal", FormatPlain, true, false, false, getenv(nil), true},
+		{"plain piped", FormatPlain, false, false, false, getenv(nil), false},
+		{"forced piped", FormatPlain, false, true, false, getenv(nil), true},
+		{"forced json", FormatJSON, false, true, false, getenv(nil), false},
+		{"forced with --no-color", FormatPlain, true, true, true, getenv(nil), false},
+		{"--no-color on a terminal", FormatPlain, true, false, true, getenv(nil), false},
+		{"NO_COLOR", FormatPlain, true, false, false, getenv(map[string]string{"NO_COLOR": "1"}), false},
+		{"forced overrides NO_COLOR", FormatPlain, false, true, false, getenv(map[string]string{"NO_COLOR": "1"}), true},
+		{"TERM=dumb", FormatPlain, true, false, false, getenv(map[string]string{"TERM": "dumb"}), false},
+		{"forced overrides TERM=dumb", FormatPlain, false, true, false, getenv(map[string]string{"TERM": "dumb"}), true},
+	}
+	for _, tc := range cases {
+		got := ColorEnabled(tc.format, tc.tty, tc.force, tc.noColor, tc.getenv)
+		if got != tc.want {
+			t.Fatalf("%s: ColorEnabled = %v, want %v", tc.name, got, tc.want)
+		}
 	}
 }
 
@@ -231,6 +273,31 @@ func TestTruncate(t *testing.T) {
 	}
 	if got := Truncate("a\nb", 5); got != "a b" {
 		t.Fatalf("Truncate newline = %q", got)
+	}
+	if got := Truncate("a\nb", 0); got != "a b" {
+		t.Fatalf("Truncate zero width = %q", got)
+	}
+	if got := Truncate("long subject", -1); got != "long subject" {
+		t.Fatalf("Truncate negative width = %q", got)
+	}
+}
+
+func TestSubjectLimit(t *testing.T) {
+	cases := []struct {
+		width int
+		def   int
+		want  int
+	}{
+		{width: 0, def: 70, want: 70},
+		{width: 0, def: 60, want: 60},
+		{width: -1, def: 60, want: -1},
+		{width: 25, def: 60, want: 25},
+	}
+	for _, tc := range cases {
+		p := &Printer{SubjectWidth: tc.width}
+		if got := p.SubjectLimit(tc.def); got != tc.want {
+			t.Fatalf("SubjectLimit with width %d, def %d = %d, want %d", tc.width, tc.def, got, tc.want)
+		}
 	}
 }
 

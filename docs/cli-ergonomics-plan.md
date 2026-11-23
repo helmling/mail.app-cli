@@ -66,7 +66,7 @@ What we deliberately do not copy: keyring auth, the `.hey/config.json` trust pro
 - Errors on stderr: `{"ok": false, "schemaVersion": 1, "error": "...", "code": "not_found", "exitCode": 2, "hint": "..."}`.
 - `--jq EXPR` implies JSON, runs gojq over the envelope (or over `data` with `--quiet`), prints string results raw like `jq -r`, and refuses to combine with `--plain`.
 - `--ids-only` and `--count` require list data and error otherwise.
-- Plain mode: tables through `text/tabwriter`. Messages show `ID`, `DATE`, flags column (`•` unread, `⚑` flagged), `FROM`, `SUBJECT`. Mailboxes show `ACCOUNT`, `MAILBOX`, `UNREAD`, `TOTAL`. `show` prints a header block then the body. Mutations print one line ("Archived 2 messages to All Mail"). Color is ANSI-16 only, disabled by `NO_COLOR`, `--no-color`, or a non-TTY.
+- Plain mode: tables through `text/tabwriter`. Messages show `ID`, `DATE`, flags column (`•` unread, `⚑` flagged), `FROM`, `SUBJECT`. Mailboxes show `ACCOUNT`, `MAILBOX`, `UNREAD`, `TOTAL`. `show` prints a header block then the body. Mutations print one line ("Archived 2 messages to All Mail"). Color is ANSI-16 only, on for a terminal, forced on in a pipe by `--color` (which implies `--plain` and overrides `NO_COLOR`), and otherwise disabled by `NO_COLOR`, `--no-color`, or a non-TTY.
 - Warnings from `pkg/mail` (index fallback, content budget, journal cleanup) go through a `mail.Warn` hook the writer owns, so they become `notices` in the envelope instead of loose stderr text. Plain mode prints them to stderr as they happen.
 
 ### Errors and exit codes

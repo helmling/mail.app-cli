@@ -57,7 +57,9 @@ Shortcuts:
   --jq EXPR     on read commands and export messages to stdout, run a jq expression over the envelope (over
                 data with --quiet); strings print raw, like jq -r.
                 State-changing commands, including file exports, reject --jq before doing any work.
+  --color       ANSI color even in a pipe; implies --plain and overrides NO_COLOR
   --no-color    disable ANSI color; NO_COLOR=1 does the same
+  --subject-width N  cap listed subjects at N runes in tables; 0 prints them in full
 
 Field names are camelCase everywhere: id, subject, sender, dateReceived, read,
 flagged, mailbox, account, toRecipients. Lists are never null.`
@@ -83,8 +85,9 @@ const environmentTopic = `Environment
   MAIL_APP_CLI_SEARCH_TIMEOUT           seconds for slow automation search (8)
   MAIL_APP_CLI_CONTENT_TIMEOUT          seconds for --with-content fetching (45)
   MAIL_APP_CLI_DISABLE_ENVELOPE_INDEX   set to force Mail.app automation for reads
+  MAIL_APP_CLI_DISABLE_SNIPPET_BACKFILL set to keep snippets to Mail's indexed summaries
   MAIL_APP_CLI_AUTOMATION_LOCK_PATH     cross-process lock file
-  NO_COLOR                              disable color
+  NO_COLOR                              disable color unless --color is given
   XDG_CONFIG_HOME                       config directory root
 
 Files

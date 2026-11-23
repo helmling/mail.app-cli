@@ -13,7 +13,21 @@ import (
 type Printer struct {
 	Out   io.Writer
 	Color bool
-	err   error
+	// SubjectWidth overrides the built-in subject budgets of table output:
+	// 0 keeps them, a negative value prints subjects in full, and a
+	// positive value caps subjects at that many runes.
+	SubjectWidth int
+	err          error
+}
+
+// SubjectLimit resolves the rune budget for a subject column: def when no
+// override is configured, otherwise the override, where a negative width
+// means full subjects.
+func (p *Printer) SubjectLimit(def int) int {
+	if p.SubjectWidth == 0 {
+		return def
+	}
+	return p.SubjectWidth
 }
 
 func (p *Printer) write(s string) {
@@ -112,13 +126,11 @@ func (p *Printer) Green(s string) string  { return p.style("32", s) }
 func (p *Printer) Yellow(s string) string { return p.style("33", s) }
 func (p *Printer) Cyan(s string) string   { return p.style("36", s) }
 
-// Truncate cuts s to width runes, adding an ellipsis when it was longer.
+// Truncate flattens line breaks and cuts s to width runes, adding an
+// ellipsis when it was longer. width 0 or less keeps s unlimited.
 func Truncate(s string, width int) string {
-	if width <= 0 {
-		return ""
-	}
 	runes := []rune(strings.ReplaceAll(strings.ReplaceAll(s, "\n", " "), "\r", ""))
-	if len(runes) <= width {
+	if width <= 0 || len(runes) <= width {
 		return string(runes)
 	}
 	if width == 1 {

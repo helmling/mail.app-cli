@@ -2,6 +2,7 @@
 (root) --account (-a)
 (root) --agent [hidden]
 (root) --backend
+(root) --color
 (root) --count
 (root) --help (-h)
 (root) --ids-only
@@ -12,6 +13,7 @@
 (root) --no-send
 (root) --plain
 (root) --quiet (-q)
+(root) --subject-width
 accounts
 accounts --help (-h)
 accounts list

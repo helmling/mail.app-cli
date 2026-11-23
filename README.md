@@ -39,7 +39,7 @@ Actions apply on screen right away and the list refreshes from the index two sec
 - Bulk operations by query, sender, or domain with receipts, chunking, verification, and report files
 - Drafts, sending with attachments and signatures, rules, smart mailboxes, threads, signatures, VIP mail
 - Export messages and attachments; validate exported JSON
-- `--json`, `--quiet`, `--jq`, `--ids-only`, `--count`, `--plain`; `NO_COLOR` respected
+- `--json`, `--quiet`, `--jq`, `--ids-only`, `--count`, `--plain`, `--color`; `NO_COLOR` respected
 - Typed errors with a fixed exit-code table and a `hint`
 - A default account and mailbox from a config file, env, or the only account Mail.app has
 - `doctor`, `commands --json`, `--agent --help`, `skill install` for agents
@@ -321,7 +321,9 @@ Errors go to stderr with a code and a hint:
 | `--ids-only` | one ID per line from inbox/unread, search, account, message, draft, thread, smart-query, or recent-search lists; attachments do not support it |
 | `--count` | just the number of items |
 | `--jq EXPR` | on read commands and `export messages` to stdout, run a jq expression over the envelope (over `data` with `--quiet`); strings print raw. Commands that change state, including file exports, reject it. |
+| `--color` | ANSI color even in a pipe; implies `--plain` and overrides `NO_COLOR` |
 | `--no-color` | no ANSI; `NO_COLOR=1` does the same |
+| `--subject-width N` | cap listed subjects at `N` runes in table output; `0` prints subjects in full |
 
 Set a default with `config set output json` or `MAIL_APP_CLI_OUTPUT=json`.
 
@@ -558,7 +560,8 @@ Keys are camelCase everywhere. Lists are never `null`. Warnings that 1.x printed
 | `MAIL_APP_CLI_SEARCH_TIMEOUT` | seconds for automation search (8) |
 | `MAIL_APP_CLI_CONTENT_TIMEOUT` | seconds for `--with-content` (45) |
 | `MAIL_APP_CLI_DISABLE_ENVELOPE_INDEX` | force Mail.app automation for reads |
-| `NO_COLOR` | disable color |
+| `MAIL_APP_CLI_DISABLE_SNIPPET_BACKFILL` | keep snippets to Mail's indexed summaries |
+| `NO_COLOR` | disable color unless `--color` is given |
 
 Caches live in `~/.cache/mail-app-cli/` (accounts and mailboxes 24h, message lists 5 minutes, recent-message journal).
 

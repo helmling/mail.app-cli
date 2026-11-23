@@ -41,20 +41,23 @@ func messageFlags(p *output.Printer, m mail.Message) string {
 }
 
 // renderMessages prints the message table. showLocation adds the
-// account/mailbox column for cross-mailbox listings.
+// account/mailbox column for cross-mailbox listings. The subject is the
+// last column so --subject-width 0 can print it in full without pushing
+// the columns after it out of alignment.
 func renderMessages(messages []mail.Message, showLocation bool) func(*output.Printer) {
 	return func(p *output.Printer) {
 		if len(messages) == 0 {
 			p.Line("%s", p.Dim("no messages"))
 			return
 		}
-		headers := []string{"ID", "DATE", "  ", "FROM", "SUBJECT"}
+		headers := []string{"ID", "DATE", "  ", "FROM"}
 		if showLocation {
 			headers = append(headers, "LOCATION")
 		}
+		headers = append(headers, "SUBJECT")
 		rows := make([][]string, 0, len(messages))
 		for _, m := range messages {
-			subject := output.Truncate(m.Subject, 70)
+			subject := output.Truncate(m.Subject, p.SubjectLimit(70))
 			if !m.Read {
 				subject = p.Bold(subject)
 			}
@@ -63,11 +66,11 @@ func renderMessages(messages []mail.Message, showLocation bool) func(*output.Pri
 				formatDate(m.DateReceived),
 				messageFlags(p, m),
 				output.Truncate(displaySender(m.Sender), 28),
-				subject,
 			}
 			if showLocation {
 				row = append(row, p.Dim(m.Account+"/"+m.Mailbox))
 			}
+			row = append(row, subject)
 			rows = append(rows, row)
 		}
 		p.Table(headers, rows)
