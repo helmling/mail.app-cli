@@ -36,24 +36,24 @@ type Flags struct {
 	IDsOnly bool
 	Count   bool
 	Agent   bool
-	Color   bool
+	FZF     bool
 	NoColor bool
 	JQ      string
 }
 
 // Resolve picks the format. Precedence: --count, --ids-only, --quiet,
-// --json/--jq/--agent, --plain/--color, the configured default, then auto
-// (plain on a terminal, JSON when piped). --color implies --plain.
+// --json/--jq/--agent, --plain/--fzf, the configured default, then auto
+// (plain on a terminal, JSON when piped). --fzf implies --plain.
 func Resolve(f Flags, configured string, stdoutIsTTY bool) (Format, error) {
 	wantsJSON := f.JSON || f.JQ != "" || f.Agent
 	if f.Plain && wantsJSON {
 		return "", clierr.Usage("--plain cannot be combined with --json, --jq, or --agent")
 	}
-	if f.Color && wantsJSON {
-		return "", clierr.Usage("--color cannot be combined with --json, --jq, or --agent")
+	if f.FZF && wantsJSON {
+		return "", clierr.Usage("--fzf cannot be combined with --json, --jq, or --agent")
 	}
-	if f.Color && f.NoColor {
-		return "", clierr.Usage("--color cannot be combined with --no-color")
+	if f.FZF && f.NoColor {
+		return "", clierr.Usage("--fzf cannot be combined with --no-color")
 	}
 	if f.JQ != "" && (f.IDsOnly || f.Count) {
 		return "", clierr.Usage("--jq cannot be combined with --ids-only or --count")
@@ -67,7 +67,7 @@ func Resolve(f Flags, configured string, stdoutIsTTY bool) (Format, error) {
 		return FormatQuiet, nil
 	case wantsJSON:
 		return FormatJSON, nil
-	case f.Plain || f.Color:
+	case f.Plain || f.FZF:
 		return FormatPlain, nil
 	}
 	switch strings.ToLower(strings.TrimSpace(configured)) {
@@ -98,7 +98,7 @@ func IsTerminal(w io.Writer) bool {
 
 // ColorEnabled reports whether the human view should carry ANSI color. Color
 // applies to the plain format only: on for a terminal, off in a pipe, unless
-// forceColor turns it on everywhere. An explicit --color also overrides
+// forceColor turns it on everywhere. An explicit --fzf also overrides
 // NO_COLOR and TERM=dumb, as no-color.org allows; --no-color always wins.
 func ColorEnabled(format Format, stdoutIsTTY, forceColor, noColorFlag bool, getenv func(string) string) bool {
 	if format != FormatPlain || noColorFlag {
@@ -119,9 +119,9 @@ type Writer struct {
 	Stdout io.Writer
 	Stderr io.Writer
 	Color  bool
-	// SubjectWidth overrides the built-in subject budgets of the human
-	// view, with the same convention as Printer.SubjectWidth.
-	SubjectWidth  int
+	// NoTruncate prints the last truncated column of each table in full,
+	// with the same convention as Printer.NoTruncate.
+	NoTruncate    bool
 	JQ            string
 	Command       string
 	SchemaVersion int
@@ -269,7 +269,7 @@ func (w *Writer) write(r Result) error {
 		}
 		return writeJSON(w.Stdout, env)
 	default:
-		p := &Printer{Out: w.Stdout, Color: w.Color, SubjectWidth: w.SubjectWidth}
+		p := &Printer{Out: w.Stdout, Color: w.Color, NoTruncate: w.NoTruncate}
 		for _, notice := range r.Notices {
 			fmt.Fprintln(w.Stderr, p.Dim("notice: "+notice))
 		}

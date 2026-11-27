@@ -13,21 +13,20 @@ import (
 type Printer struct {
 	Out   io.Writer
 	Color bool
-	// SubjectWidth overrides the built-in subject budgets of table output:
-	// 0 keeps them, a negative value prints subjects in full, and a
-	// positive value caps subjects at that many runes.
-	SubjectWidth int
-	err          error
+	// NoTruncate prints the last truncated column of each table in full
+	// (--fzf); the other column budgets stay.
+	NoTruncate bool
+	err        error
 }
 
-// SubjectLimit resolves the rune budget for a subject column: def when no
-// override is configured, otherwise the override, where a negative width
-// means full subjects.
-func (p *Printer) SubjectLimit(def int) int {
-	if p.SubjectWidth == 0 {
-		return def
+// Trailing truncates the last column of a table, the subject or its
+// equivalent: NoTruncate prints it in full (line breaks still flatten),
+// otherwise the built-in width budget applies.
+func (p *Printer) Trailing(s string, budget int) string {
+	if p.NoTruncate {
+		return Truncate(s, 0)
 	}
-	return p.SubjectWidth
+	return Truncate(s, budget)
 }
 
 func (p *Printer) write(s string) {

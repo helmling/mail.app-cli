@@ -16,12 +16,12 @@ func renderThreads(threads []threadSummary) func(*output.Printer) {
 	return func(p *output.Printer) {
 		rows := make([][]string, 0, len(threads))
 		for _, t := range threads {
-			subject := output.Truncate(t.Subject, p.SubjectLimit(60))
+			subject := p.Trailing(t.Subject, 60)
 			if t.UnreadCount > 0 {
 				subject = p.Bold(subject)
 			}
-			// The subject stays last so --subject-width 0 can print it in
-			// full without pushing the participants out of view.
+			// The subject stays last so --fzf can print it in full
+			// without pushing the participants out of view.
 			rows = append(rows, []string{p.Dim(output.Truncate(t.ID, 40)), formatDate(t.LatestDate), fmt.Sprintf("%d/%d", t.UnreadCount, t.Count), output.Truncate(strings.Join(t.Participants, ", "), 40), subject})
 		}
 		if len(rows) == 0 {

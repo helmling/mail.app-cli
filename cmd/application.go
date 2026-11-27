@@ -18,12 +18,8 @@ type application struct {
 	flagMailbox string
 	flagBackend string
 	flagNoSend  bool
-	// flagSubjectWidth mirrors --subject-width: -1 keeps the built-in
-	// subject budgets, 0 prints subjects in full, and a positive value
-	// caps them at that many runes.
-	flagSubjectWidth int
-	outFlags         output.Flags
-	writer           *output.Writer
+	outFlags    output.Flags
+	writer      *output.Writer
 	// Retain failed loads for fallback formatting without reading config twice.
 	cfg                     config.Config
 	resolved                config.Resolved

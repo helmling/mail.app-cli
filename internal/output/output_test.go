@@ -42,10 +42,11 @@ func TestResolvePrecedence(t *testing.T) {
 		{Flags{Quiet: true, JSON: true}, "", true, FormatQuiet},
 		{Flags{IDsOnly: true, Quiet: true}, "", true, FormatIDs},
 		{Flags{Count: true, IDsOnly: true}, "", true, FormatCount},
-		{Flags{Color: true}, "auto", true, FormatPlain},
-		{Flags{Color: true}, "auto", false, FormatPlain},
-		{Flags{Color: true}, "json", false, FormatPlain},
-		{Flags{Color: true, Count: true}, "", false, FormatCount},
+		{Flags{FZF: true}, "auto", true, FormatPlain},
+		{Flags{FZF: true}, "auto", false, FormatPlain},
+		{Flags{FZF: true}, "json", false, FormatPlain},
+		{Flags{FZF: true, Plain: true}, "json", false, FormatPlain},
+		{Flags{FZF: true, Count: true}, "", false, FormatCount},
 	}
 	for _, tc := range cases {
 		got, err := Resolve(tc.flags, tc.configured, tc.tty)
@@ -59,11 +60,17 @@ func TestResolvePrecedence(t *testing.T) {
 	if _, err := Resolve(Flags{Plain: true, JSON: true}, "", true); err == nil {
 		t.Fatal("--plain with --json was accepted")
 	}
-	if _, err := Resolve(Flags{Color: true, JSON: true}, "", true); err == nil {
-		t.Fatal("--color with --json was accepted")
+	if _, err := Resolve(Flags{FZF: true, JSON: true}, "", true); err == nil {
+		t.Fatal("--fzf with --json was accepted")
 	}
-	if _, err := Resolve(Flags{Color: true, NoColor: true}, "", true); err == nil {
-		t.Fatal("--color with --no-color was accepted")
+	if _, err := Resolve(Flags{FZF: true, JQ: "."}, "", true); err == nil {
+		t.Fatal("--fzf with --jq was accepted")
+	}
+	if _, err := Resolve(Flags{FZF: true, Agent: true}, "", true); err == nil {
+		t.Fatal("--fzf with --agent was accepted")
+	}
+	if _, err := Resolve(Flags{FZF: true, NoColor: true}, "", true); err == nil {
+		t.Fatal("--fzf with --no-color was accepted")
 	}
 	if _, err := Resolve(Flags{JQ: ".", Count: true}, "", true); err == nil {
 		t.Fatal("--jq with --count was accepted")
@@ -85,14 +92,14 @@ func TestColorEnabled(t *testing.T) {
 	}{
 		{"plain on a terminal", FormatPlain, true, false, false, getenv(nil), true},
 		{"plain piped", FormatPlain, false, false, false, getenv(nil), false},
-		{"forced piped", FormatPlain, false, true, false, getenv(nil), true},
-		{"forced json", FormatJSON, false, true, false, getenv(nil), false},
-		{"forced with --no-color", FormatPlain, true, true, true, getenv(nil), false},
+		{"--fzf piped", FormatPlain, false, true, false, getenv(nil), true},
+		{"--fzf json", FormatJSON, false, true, false, getenv(nil), false},
+		{"--fzf with --no-color", FormatPlain, true, true, true, getenv(nil), false},
 		{"--no-color on a terminal", FormatPlain, true, false, true, getenv(nil), false},
 		{"NO_COLOR", FormatPlain, true, false, false, getenv(map[string]string{"NO_COLOR": "1"}), false},
-		{"forced overrides NO_COLOR", FormatPlain, false, true, false, getenv(map[string]string{"NO_COLOR": "1"}), true},
+		{"--fzf overrides NO_COLOR", FormatPlain, false, true, false, getenv(map[string]string{"NO_COLOR": "1"}), true},
 		{"TERM=dumb", FormatPlain, true, false, false, getenv(map[string]string{"TERM": "dumb"}), false},
-		{"forced overrides TERM=dumb", FormatPlain, false, true, false, getenv(map[string]string{"TERM": "dumb"}), true},
+		{"--fzf overrides TERM=dumb", FormatPlain, false, true, false, getenv(map[string]string{"TERM": "dumb"}), true},
 	}
 	for _, tc := range cases {
 		got := ColorEnabled(tc.format, tc.tty, tc.force, tc.noColor, tc.getenv)
@@ -282,22 +289,20 @@ func TestTruncate(t *testing.T) {
 	}
 }
 
-func TestSubjectLimit(t *testing.T) {
-	cases := []struct {
-		width int
-		def   int
-		want  int
-	}{
-		{width: 0, def: 70, want: 70},
-		{width: 0, def: 60, want: 60},
-		{width: -1, def: 60, want: -1},
-		{width: 25, def: 60, want: 25},
+func TestTrailing(t *testing.T) {
+	long := strings.Repeat("s", 100)
+	// The zero value keeps the built-in budget.
+	p := &Printer{}
+	if got := p.Trailing(long, 70); got != Truncate(long, 70) || !strings.HasSuffix(got, "…") {
+		t.Fatalf("Trailing default = %q", got)
 	}
-	for _, tc := range cases {
-		p := &Printer{SubjectWidth: tc.width}
-		if got := p.SubjectLimit(tc.def); got != tc.want {
-			t.Fatalf("SubjectLimit with width %d, def %d = %d, want %d", tc.width, tc.def, got, tc.want)
-		}
+	// NoTruncate prints the last column in full, still flattening line breaks.
+	p = &Printer{NoTruncate: true}
+	if got := p.Trailing(long, 70); got != long {
+		t.Fatalf("Trailing with NoTruncate = %q", got)
+	}
+	if got := p.Trailing("a\nb", 70); got != "a b" {
+		t.Fatalf("Trailing with NoTruncate over a newline = %q", got)
 	}
 }
 

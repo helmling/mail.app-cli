@@ -123,7 +123,7 @@ func renderDoctor(r doctorResult) func(*output.Printer) {
 			if !ok {
 				state = p.Red("fail")
 			}
-			return []string{label, state, output.Truncate(detail, 80)}
+			return []string{label, state, p.Trailing(detail, 80)}
 		}
 		rows := [][]string{
 			{"backend", "", r.Backend},

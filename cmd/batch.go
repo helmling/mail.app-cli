@@ -93,11 +93,11 @@ func renderReceipt(result batchResult, opts batchOptions) func(*output.Printer) 
 			default:
 				status = p.Yellow(status)
 			}
-			detail := output.Truncate(item.Subject, 50)
+			detail := p.Trailing(item.Subject, 50)
 			if item.Error != "" {
-				detail = p.Red(output.Truncate(item.Error, 60))
+				detail = p.Red(p.Trailing(item.Error, 60))
 			} else if item.VerifyError != "" {
-				detail = p.Yellow(output.Truncate(item.VerifyError, 60))
+				detail = p.Yellow(p.Trailing(item.VerifyError, 60))
 			}
 			rows = append(rows, []string{p.Dim(item.ID), status, location, detail})
 		}

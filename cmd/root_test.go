@@ -153,7 +153,7 @@ func TestRunDerivesAutomaticOutputFromSuppliedStdout(t *testing.T) {
 	}
 }
 
-func TestRunColorForcedWhenPiped(t *testing.T) {
+func TestRunFZFForcesPlainColorWhenPiped(t *testing.T) {
 	t.Setenv(config.EnvConfigPath, filepath.Join(t.TempDir(), "config.json"))
 	t.Setenv(config.EnvOutput, "")
 	t.Setenv("NO_COLOR", "")
@@ -166,34 +166,35 @@ func TestRunColorForcedWhenPiped(t *testing.T) {
 	if code := a.run([]string{"version", "--plain"}, &stdout, &stderr); code != 0 {
 		t.Fatalf("plain piped exit = %d: %s", code, stderr.String())
 	}
-	if a.writer == nil || a.writer.Format != output.FormatPlain || a.writer.Color {
-		t.Fatalf("plain piped writer = %#v, want plain non-color writer", a.writer)
+	if a.writer == nil || a.writer.Format != output.FormatPlain || a.writer.Color || a.writer.NoTruncate {
+		t.Fatalf("plain piped writer = %#v, want plain non-color truncating writer", a.writer)
 	}
 
-	// --color implies the human view and keeps color in a pipe.
+	// --fzf implies the human view, keeps color in a pipe, and prints the
+	// last truncated column of each table in full.
 	a = newApplication()
 	stdout.Reset()
 	stderr.Reset()
-	if code := a.run([]string{"version", "--color"}, &stdout, &stderr); code != 0 {
-		t.Fatalf("color piped exit = %d: %s", code, stderr.String())
+	if code := a.run([]string{"version", "--fzf"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("fzf piped exit = %d: %s", code, stderr.String())
 	}
-	if a.writer == nil || a.writer.Format != output.FormatPlain || !a.writer.Color {
-		t.Fatalf("color piped writer = %#v, want plain color writer", a.writer)
+	if a.writer == nil || a.writer.Format != output.FormatPlain || !a.writer.Color || !a.writer.NoTruncate {
+		t.Fatalf("fzf piped writer = %#v, want plain color no-truncate writer", a.writer)
 	}
 
-	// An explicit --color also overrides NO_COLOR.
+	// An explicit --fzf also overrides NO_COLOR.
 	a = newApplication()
 	t.Setenv("NO_COLOR", "1")
 	stdout.Reset()
 	stderr.Reset()
-	if code := a.run([]string{"version", "--plain", "--color"}, &stdout, &stderr); code != 0 {
-		t.Fatalf("color against NO_COLOR exit = %d: %s", code, stderr.String())
+	if code := a.run([]string{"version", "--plain", "--fzf"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("fzf against NO_COLOR exit = %d: %s", code, stderr.String())
 	}
 	if a.writer == nil || !a.writer.Color {
 		t.Fatalf("NO_COLOR writer = %#v, want color writer", a.writer)
 	}
 
-	// Errors raised before the writer exists honor --color as well.
+	// Errors raised before the writer exists honor --fzf as well.
 	t.Setenv("NO_COLOR", "")
 	stdout.Reset()
 	var errOut bytes.Buffer
@@ -204,11 +205,11 @@ func TestRunColorForcedWhenPiped(t *testing.T) {
 		t.Fatalf("plain piped parse error = %q, want no ANSI", errOut.String())
 	}
 	errOut.Reset()
-	if code := Run([]string{"nonsense", "--plain", "--color"}, &stdout, &errOut); code != 1 {
-		t.Fatalf("color parse error exit = %d", code)
+	if code := Run([]string{"nonsense", "--fzf"}, &stdout, &errOut); code != 1 {
+		t.Fatalf("fzf parse error exit = %d", code)
 	}
 	if !strings.Contains(errOut.String(), "\x1b[") {
-		t.Fatalf("color piped parse error = %q, want ANSI color", errOut.String())
+		t.Fatalf("fzf piped parse error = %q, want ANSI color", errOut.String())
 	}
 }
 
@@ -324,14 +325,23 @@ func TestPlainAndJSONConflict(t *testing.T) {
 	}
 }
 
-func TestColorFlagConflicts(t *testing.T) {
-	code, _, stderr := run(t, "version", "--color", "--json")
-	if code != 1 || !strings.Contains(stderr, "--color cannot be combined with --json") {
-		t.Fatalf("color json exit = %d, stderr = %s", code, stderr)
+func TestFZFConflicts(t *testing.T) {
+	code, _, stderr := run(t, "version", "--fzf", "--json")
+	if code != 1 || !strings.Contains(stderr, "--fzf cannot be combined with --json") {
+		t.Fatalf("fzf json exit = %d, stderr = %s", code, stderr)
 	}
-	code, _, stderr = run(t, "version", "--color", "--no-color")
-	if code != 1 || !strings.Contains(stderr, "--color cannot be combined with --no-color") {
-		t.Fatalf("color no-color exit = %d, stderr = %s", code, stderr)
+	code, _, stderr = run(t, "version", "--fzf", "--jq", ".data")
+	if code != 1 || !strings.Contains(stderr, "--fzf cannot be combined with --json, --jq, or --agent") {
+		t.Fatalf("fzf jq exit = %d, stderr = %s", code, stderr)
+	}
+	code, _, stderr = run(t, "version", "--fzf", "--no-color")
+	if code != 1 || !strings.Contains(stderr, "--fzf cannot be combined with --no-color") {
+		t.Fatalf("fzf no-color exit = %d, stderr = %s", code, stderr)
+	}
+	// --fzf with --plain is redundant but allowed.
+	code, _, stderr = run(t, "version", "--fzf", "--plain")
+	if code != 0 || stderr != "" {
+		t.Fatalf("fzf plain exit = %d, stderr = %s", code, stderr)
 	}
 }
 

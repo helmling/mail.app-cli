@@ -11,15 +11,18 @@ import (
 )
 
 func renderRules(rules []mail.Rule) func(*output.Printer) {
-	rows := make([][]string, 0, len(rules))
-	for _, rule := range rules {
-		enabled := "yes"
-		if !rule.Enabled {
-			enabled = "no"
+	return func(p *output.Printer) {
+		rows := make([][]string, 0, len(rules))
+		for _, rule := range rules {
+			enabled := "yes"
+			if !rule.Enabled {
+				enabled = "no"
+			}
+			// Actions stays last so --fzf can print it in full.
+			rows = append(rows, []string{rule.Name, enabled, output.Truncate(strings.Join(rule.Conditions, "; "), 70), p.Trailing(strings.Join(rule.Actions, "; "), 40)})
 		}
-		rows = append(rows, []string{rule.Name, enabled, output.Truncate(strings.Join(rule.Conditions, "; "), 70), output.Truncate(strings.Join(rule.Actions, "; "), 40)})
+		renderTable([]string{"NAME", "ENABLED", "CONDITIONS", "ACTIONS"}, rows, "no rules")(p)
 	}
-	return renderTable([]string{"NAME", "ENABLED", "CONDITIONS", "ACTIONS"}, rows, "no rules")
 }
 
 func (a *application) setRuleEnabled(name string, enabled bool) error {

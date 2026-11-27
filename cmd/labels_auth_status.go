@@ -196,7 +196,7 @@ func renderGmailAuth(report gmailAuthReport) func(*output.Printer) {
 			if address.Status == gmail.AuthConnected {
 				detail = "Gmail profile " + address.ProviderEmail
 			}
-			rows = append(rows, []string{address.Email, state, output.Truncate(detail, 80)})
+			rows = append(rows, []string{address.Email, state, p.Trailing(detail, 80)})
 		}
 		p.Table([]string{"EMAIL", "STATUS", "DETAIL"}, rows)
 		p.Blank()

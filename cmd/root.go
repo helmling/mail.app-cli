@@ -77,7 +77,7 @@ func (a *application) run(args []string, stdout, stderr io.Writer) int {
 		// config must not replace the original Cobra error.
 		flags := outputFlagsFromArgs(args)
 		format := a.fallbackOutputFormat(flags, stdout)
-		color := output.ColorEnabled(format, output.IsTerminal(stdout), flags.Color, flags.NoColor, os.Getenv)
+		color := output.ColorEnabled(format, output.IsTerminal(stdout), flags.FZF, flags.NoColor, os.Getenv)
 		w, _ = output.New(format, stdout, stderr, color, "", "", mail.SchemaVersion)
 	}
 	w.Error(cerr)
@@ -168,8 +168,8 @@ func setOutputBoolFlag(flags *output.Flags, arg string) {
 		flags.Count = set
 	case "--agent":
 		flags.Agent = set
-	case "--color":
-		flags.Color = set
+	case "--fzf":
+		flags.FZF = set
 	case "--no-color":
 		flags.NoColor = set
 	}
@@ -231,27 +231,12 @@ func (a *application) prepare(cmd *cobra.Command, args []string) error {
 		return clierr.Usage("--jq cannot be combined with a command that changes state").
 			WithHint("run the mutation without --jq so its receipt remains available")
 	}
-	color := output.ColorEnabled(format, tty, a.outFlags.Color, a.outFlags.NoColor, os.Getenv)
-	// --subject-width only shapes the human view. The flag spells -1 for
-	// "unset" and 0 for "full subjects"; the writer's override spells 0
-	// for "no override" and negative for "full".
-	subjectWidth := 0
-	if cmd.Flags().Changed("subject-width") {
-		if a.flagSubjectWidth < 0 {
-			return clierr.Usage("--subject-width must be 0 or greater").
-				WithHint("0 prints subjects in full; omit the flag to keep the default truncation")
-		}
-		if a.flagSubjectWidth == 0 {
-			subjectWidth = -1
-		} else {
-			subjectWidth = a.flagSubjectWidth
-		}
-	}
+	color := output.ColorEnabled(format, tty, a.outFlags.FZF, a.outFlags.NoColor, os.Getenv)
 	a.writer, err = output.New(format, cmd.OutOrStdout(), cmd.ErrOrStderr(), color, a.outFlags.JQ, commandPath(cmd), mail.SchemaVersion)
 	if err != nil {
 		return err
 	}
-	a.writer.SubjectWidth = subjectWidth
+	a.writer.NoTruncate = a.outFlags.FZF
 	a.mailClient = mail.NewClient().WithContext(cmd.Context())
 	if a.resolved.SendEnabled.Value == "false" {
 		a.mailClient = a.mailClient.WithSendingDisabled()
@@ -398,10 +383,9 @@ statuses, and 'help agents' for how to drive it from a script or an agent.`,
 	pf.BoolVar(&a.outFlags.IDsOnly, "ids-only", false, "Print one ID per line from list output")
 	pf.BoolVar(&a.outFlags.Count, "count", false, "Print only the number of items in list output")
 	pf.StringVar(&a.outFlags.JQ, "jq", "", "Filter JSON output with a jq expression (implies --json)")
-	pf.BoolVar(&a.outFlags.Color, "color", false, "Force ANSI color in the human view, even when piped (implies --plain)")
+	pf.BoolVar(&a.outFlags.FZF, "fzf", false, "Human view for fzf: ANSI color even when piped and the last column (subjects and the like) in full; implies --plain")
 	pf.BoolVar(&a.outFlags.NoColor, "no-color", false, "Disable ANSI color in the human view")
 	pf.BoolVar(&a.outFlags.Agent, "agent", false, "JSON output and JSON --help for agents")
-	pf.IntVar(&a.flagSubjectWidth, "subject-width", -1, "Cap listed subjects at this many runes in the human view; 0 prints them in full")
 	_ = pf.MarkHidden("agent")
 
 	a.rootCmd.AddGroup(
